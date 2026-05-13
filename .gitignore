@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+*.pyx.in
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docview
+
+# Dataset & Local Config (never commit real datasets or tokens)
+dataset_config.json
+instances_all.json.bak
+*.jpg
+*.jpeg
+*.png
+images/
+annotations/
+
+# HuggingFace cache
+.hf_cache/
+huggingface_hub/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# Logs
+*.log
+*.log.*
+
+# Distribution
+*.spec

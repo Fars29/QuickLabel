@@ -1,0 +1,821 @@
+"""
+ui/review_screen.py — Bounding box annotation review screen.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import tempfile
+import config
+from pathlib import Path
+from typing import Optional, Union
+
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QKeyEvent, QPixmap, QKeySequence, QImage
+from PyQt6.QtWidgets import (
+    QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QMessageBox, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+)
+
+from config import (
+    COLOR_ACCENT, COLOR_BG, COLOR_HIGHLIGHT, COLOR_SURFACE, COLOR_SURFACE2,
+    COLOR_TEXT, COLOR_TEXT_MUTED, COLOR_SUCCESS, COLOR_WARNING, COLOR_DANGER,
+    BBOX_COLOR_PROPAGATED, FILMSTRIP_WIDTH, THUMBNAIL_SIZE,
+)
+from core.dataset_manager import DatasetManager
+from core.image_processor import process_frame, make_thumbnail, _to_pil
+from core.tracker import MultiBBoxTracker
+from ui.components.bbox_canvas import BBoxCanvas, BoxState
+
+_BTN_PRIMARY = f"""
+QPushButton {{
+    background: {COLOR_HIGHLIGHT}; color: white; border: none;
+    border-radius: 8px; padding: 10px 20px; font-size: 13px;
+    font-weight: 600; font-family: "Segoe UI", Inter, Arial;
+}}
+QPushButton:hover {{ background: #ff6b7f; }}
+QPushButton:pressed {{ background: #c73652; }}
+QPushButton:disabled {{ background: {COLOR_ACCENT}; color: {COLOR_TEXT_MUTED}; }}
+"""
+
+_BTN_NAV = f"""
+QPushButton {{
+    background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+    border: 1px solid {COLOR_ACCENT};
+    border-radius: 8px; padding: 8px 16px; font-size: 13px;
+    font-family: "Segoe UI", Inter, Arial;
+}}
+QPushButton:hover {{ background: {COLOR_ACCENT}; border-color: {COLOR_HIGHLIGHT}; }}
+QPushButton:pressed {{ background: {COLOR_BG}; }}
+QPushButton:disabled {{ background: {COLOR_BG}; color: {COLOR_TEXT_MUTED}; border-color: {COLOR_BG}; }}
+"""
+
+
+class BBoxListWidget(QWidget):
+    """Custom widget that forwards mouse clicks to select the list item."""
+    def __init__(self, list_widget, item, parent=None):
+        super().__init__(parent)
+        self.list_widget = list_widget
+        self.item = item
+        
+    def mousePressEvent(self, event):
+        self.list_widget.setCurrentItem(self.item)
+        super().mousePressEvent(event)
+
+class SyncProgressDialog(QDialog):
+    """Modal progress dialog for merge+sync operations."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Saving & Syncing")
+        self.setMinimumWidth(420)
+        self.setModal(True)
+        self.setStyleSheet(f"background: {COLOR_SURFACE}; color: {COLOR_TEXT}; font-family: 'Segoe UI', Inter, Arial;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(14)
+
+        self._title_label = QLabel("Processing…")
+        self._title_label.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {COLOR_TEXT};")
+        layout.addWidget(self._title_label)
+
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 13px;")
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)
+        self._progress.setFixedHeight(8)
+        self._progress.setStyleSheet(
+            f"QProgressBar {{ background: {COLOR_BG}; border-radius: 4px; border: none; }}"
+            f"QProgressBar::chunk {{ background: {COLOR_HIGHLIGHT}; border-radius: 4px; }}"
+        )
+        layout.addWidget(self._progress)
+
+    def set_status(self, title: str, detail: str = ""):
+        self._title_label.setText(title)
+        self._status_label.setText(detail)
+
+    def set_determinate(self, value: int, maximum: int):
+        self._progress.setRange(0, maximum)
+        self._progress.setValue(value)
+
+
+class ReviewThumbnail(QFrame):
+    """Miniature for the filmstrip with hover trash icon."""
+    removed = pyqtSignal()
+    
+    def __init__(self, pixmap: QPixmap, index_text: str, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(FILMSTRIP_WIDTH - 4, THUMBNAIL_SIZE + 20)
+        self.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self.setMouseTracking(True)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+        
+        self.img_lbl = QLabel()
+        self.img_lbl.setPixmap(pixmap)
+        self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.img_lbl)
+        
+        self.txt_lbl = QLabel(index_text)
+        self.txt_lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11px;")
+        self.txt_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.txt_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.txt_lbl)
+        
+        self.trash = QPushButton("🗑", self)
+        self.trash.setFixedSize(22, 22)
+        self.trash.setStyleSheet(f"QPushButton {{ background: {COLOR_DANGER}; color: white; border-radius: 4px; font-size: 12px; }} QPushButton:hover {{ background: #ff6b7f; }}")
+        self.trash.move(self.width() - 32, 4)
+        self.trash.setVisible(False)
+        self.trash.clicked.connect(self.removed.emit)
+
+    def enterEvent(self, event):
+        self.trash.setVisible(True)
+        super().enterEvent(event)
+        
+    def leaveEvent(self, event):
+        self.trash.setVisible(False)
+        super().leaveEvent(event)
+
+class ReviewScreen(QWidget):
+    """
+    Review & annotate bounding boxes for a batch of images.
+
+    Signals:
+        done(class_name, saved_paths, annotations_per_image)
+        cancelled()
+    """
+
+    done = pyqtSignal(str, list, list)
+    cancelled = pyqtSignal()
+
+    def __init__(
+        self,
+        class_name: str,
+        sources: list,
+        dataset_manager: DatasetManager,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.class_name = class_name
+        self.dm = dataset_manager
+        # sources: list of np.ndarray or str/Path
+        self._sources = sources
+        self._current_idx = 0
+        self._annotations: list[list[list[float]]] = [[] for _ in sources]
+        self._states: list[list[BoxState]] = [[] for _ in sources]
+        self._tracker = MultiBBoxTracker()
+        self._processed_frames: dict[int, np.ndarray] = {}
+        self._is_current_modified = False
+        self._build_ui()
+        self._load_image(0)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def _build_ui(self):
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self._splitter = __import__('PyQt6.QtWidgets', fromlist=['QSplitter']).QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(2)
+        self._splitter.setStyleSheet(f"QSplitter::handle {{ background: {COLOR_ACCENT}; }}")
+        main_layout.addWidget(self._splitter)
+
+        # ── Left: filmstrip ────────────────────────────────────────────────────
+        left_panel = QWidget()
+        left_panel.setFixedWidth(FILMSTRIP_WIDTH + 20)
+        left_panel.setStyleSheet(f"background: {COLOR_SURFACE}; border: none;")
+
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(8, 12, 8, 12)
+        left_layout.setSpacing(6)
+
+        film_label = QLabel("IMAGES")
+        film_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 1px;")
+        left_layout.addWidget(film_label)
+
+        self._filmstrip = QListWidget()
+        self._filmstrip.setStyleSheet(f"""
+            QListWidget {{ background: transparent; border: none; outline: 0; }}
+            QListWidget::item {{ padding: 2px; border-radius: 8px; margin-bottom: 4px; }}
+            QListWidget::item:selected {{ background: {COLOR_ACCENT}; }}
+        """)
+        self._filmstrip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._filmstrip.currentRowChanged.connect(self._on_filmstrip_select)
+        left_layout.addWidget(self._filmstrip, 1)
+
+
+
+        self._progress_label = QLabel("0 / 0 annotated")
+        self._progress_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
+        left_layout.addWidget(self._progress_label)
+
+        self._splitter.addWidget(left_panel)
+
+        # ── Center: canvas ─────────────────────────────────────────────────────
+        center = QWidget()
+        center.setStyleSheet(f"background: {COLOR_BG};")
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+
+        # Top bar
+        top_bar = QWidget()
+        top_bar.setStyleSheet(f"background: {COLOR_SURFACE2}; border-bottom: 1px solid {COLOR_ACCENT};")
+        top_bar.setFixedHeight(56)
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(12, 0, 12, 0)
+        top_bar_layout.setSpacing(10)
+
+        # Back button at top left
+        back_btn = QPushButton("← Back")
+        back_btn.setFixedWidth(80)
+        back_btn.setFixedHeight(34)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+                border: 1px solid {COLOR_ACCENT}; border-radius: 6px;
+                font-size: 12px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background: {COLOR_ACCENT}; border-color: {COLOR_HIGHLIGHT}; }}
+        """)
+        back_btn.clicked.connect(self.cancelled.emit)
+        top_bar_layout.addWidget(back_btn)
+
+        # Class badge (snellier)
+        self._class_badge = QLabel(self.class_name)
+        self._class_badge.setStyleSheet(
+            f"color: white; background: {COLOR_HIGHLIGHT}; border-radius: 6px; "
+            f"padding: 0px 12px; font-size: 13px; font-weight: 700; "
+            f"margin-left: 4px;"
+        )
+        self._class_badge.setFixedHeight(28)
+        top_bar_layout.addWidget(self._class_badge)
+
+        top_bar_layout.addStretch()
+
+        # Hints - formatted cleanly
+        hints_container = QFrame()
+        hints_container.setStyleSheet("background: transparent; border: none;")
+        hints_layout = QHBoxLayout(hints_container)
+        hints_layout.setContentsMargins(0, 0, 0, 0)
+        hints_layout.setSpacing(16)
+
+        def make_hint(key, action):
+            h = QLabel(f"<span style='color:{COLOR_TEXT_MUTED}'>{action}:</span> <span style='color:{COLOR_TEXT}'>{key}</span>")
+            h.setStyleSheet("font-size: 12px; font-family: Segoe UI, Inter;")
+            return h
+
+        hints_layout.addWidget(make_hint("Click & Drag", "Draw"))
+        hints_layout.addWidget(make_hint("Ctrl + Scroll", "Zoom"))
+        hints_layout.addWidget(make_hint("Canc", "Delete"))
+        
+        top_bar_layout.addWidget(hints_container)
+        top_bar_layout.addStretch()
+
+        # Save Dataset at top right
+        self._done_btn = QPushButton("✓ Save Dataset")
+        self._done_btn.setStyleSheet(_BTN_PRIMARY)
+        self._done_btn.setFixedHeight(36)
+        self._done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._done_btn.clicked.connect(self._on_done)
+        top_bar_layout.addWidget(self._done_btn)
+
+        center_layout.addWidget(top_bar)
+
+        self._canvas = BBoxCanvas()
+        self._canvas.annotations_changed.connect(self._on_annotations_changed)
+        self._canvas.box_selected.connect(self._on_box_selected)
+        center_layout.addWidget(self._canvas, 1)
+
+        # Bottom nav bar (Pagination only)
+        nav_bar = QWidget()
+        nav_bar.setStyleSheet(f"background: {COLOR_SURFACE}; border-top: 1px solid {COLOR_ACCENT};")
+        nav_bar.setFixedHeight(60)
+        nav_layout = QHBoxLayout(nav_bar)
+        nav_layout.setContentsMargins(16, 0, 16, 0)
+        nav_layout.setSpacing(20)
+
+        nav_layout.addStretch()
+
+        self._prev_btn = QPushButton("← Prev")
+        self._prev_btn.setStyleSheet(_BTN_NAV)
+        self._prev_btn.setFixedWidth(100)
+        self._prev_btn.clicked.connect(self._go_prev)
+        nav_layout.addWidget(self._prev_btn)
+
+        self._img_counter = QLabel("1 / 1")
+        self._img_counter.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 14px; font-weight: 600; min-width: 80px;")
+        self._img_counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nav_layout.addWidget(self._img_counter)
+
+        self._next_btn = QPushButton("Next →")
+        self._next_btn.setStyleSheet(_BTN_NAV)
+        self._next_btn.setFixedWidth(100)
+        self._next_btn.clicked.connect(self._go_next)
+        nav_layout.addWidget(self._next_btn)
+
+        nav_layout.addStretch()
+
+        center_layout.addWidget(nav_bar)
+        self._splitter.addWidget(center)
+
+        # ── Right: bbox list ───────────────────────────────────────────────────
+        right_panel = QWidget()
+        right_panel.setMinimumWidth(280)
+        right_panel.setStyleSheet(f"background: {COLOR_SURFACE}; border-left: none; border-top: none; border-bottom: none; border-right: none;")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(16, 16, 16, 16)
+        right_layout.setSpacing(8)
+
+        boxes_label = QLabel("BOUNDING BOXES")
+        boxes_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 1px;")
+        right_layout.addWidget(boxes_label)
+
+        self._bbox_list = QListWidget()
+        self._bbox_list.setStyleSheet(f"""
+            QListWidget {{ background: transparent; border: none; outline: 0; color: {COLOR_TEXT}; font-size: 12px; }}
+            QListWidget::item {{ padding: 0px; border-radius: 6px; margin: 2px 0; }}
+            QListWidget::item:selected {{ background: {COLOR_ACCENT}; color: {COLOR_TEXT}; }}
+            QListWidget::item:hover {{ background: {COLOR_ACCENT}; }}
+        """)
+        self._bbox_list.currentRowChanged.connect(self._on_bbox_list_select)
+        right_layout.addWidget(self._bbox_list, 1)
+
+        self._splitter.addWidget(right_panel)
+        
+        # Set initial sizes
+        self._splitter.setSizes([FILMSTRIP_WIDTH + 20, 800, 320])
+
+        # Shortcuts
+        from PyQt6.QtGui import QShortcut
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, self._go_next)
+        QShortcut(QKeySequence(Qt.Key.Key_Left), self, self._go_prev)
+        QShortcut(QKeySequence(Qt.Key.Key_D), self, self._canvas.delete_selected)
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, self._canvas.delete_selected)
+        QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self._canvas.delete_selected)
+
+        # Populate filmstrip
+        self._populate_filmstrip()
+        self._update_nav()
+
+    # ─── Filmstrip ─────────────────────────────────────────────────────────────
+
+    def _populate_filmstrip(self):
+        self._filmstrip.clear()
+        for i, src in enumerate(self._sources):
+            try:
+                pil = _to_pil(src)
+                thumb = make_thumbnail(pil, THUMBNAIL_SIZE)
+                buf = io.BytesIO()
+                thumb.save(buf, format="PNG")
+                buf.seek(0)
+                pix = QPixmap()
+                pix.loadFromData(buf.read())
+            except Exception:
+                pix = QPixmap(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
+                pix.fill(QColor(COLOR_SURFACE))
+
+            from PyQt6.QtGui import QIcon
+            item = QListWidgetItem()
+            thumb_widget = ReviewThumbnail(pix, f"{i+1}")
+            thumb_widget.removed.connect(lambda idx=i: self._delete_image_by_index(idx))
+            item.setSizeHint(thumb_widget.sizeHint())
+            
+            self._filmstrip.addItem(item)
+            self._filmstrip.setItemWidget(item, thumb_widget)
+
+        self._filmstrip.setCurrentRow(0)
+
+    def _update_filmstrip_item(self, idx: int):
+        item = self._filmstrip.item(idx)
+        if item is None:
+            return
+        has_ann = bool(self._annotations[idx])
+        color = COLOR_SUCCESS if has_ann else COLOR_TEXT_MUTED
+        item.setForeground(QColor(color))
+
+    # ─── Navigation ────────────────────────────────────────────────────────────
+
+    def _save_current(self):
+        """Save canvas annotations back to memory for current image."""
+        self._annotations[self._current_idx] = self._canvas.get_annotations()
+        self._states[self._current_idx] = self._canvas.get_annotation_states()
+        self._update_filmstrip_item(self._current_idx)
+        self._update_progress_label()
+
+    def _load_image(self, idx: int):
+        self._current_idx = idx
+        self._is_current_modified = False
+        src = self._sources[idx]
+
+        # Store a consistently-sized BGR frame for the tracker.
+        # We use the configured resolution so that all frames are the same size.
+        try:
+            from core.image_processor import process_frame_to_array
+            rgb_arr = process_frame_to_array(src)          # Config RGB
+            frame_bgr = rgb_arr[:, :, ::-1].copy()        # → BGR for OpenCV
+        except Exception:
+            import config
+            frame_bgr = np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 3), dtype=np.uint8)
+
+        self._processed_frames[idx] = frame_bgr  # always config resolution BGR
+        self._canvas.load_image(src)              # canvas uses ORIGINAL resolution
+
+        # Set existing annotations (in original-image coords)
+        ann = self._annotations[idx]
+        states = self._states[idx] if self._states[idx] else [BoxState.CONFIRMED] * len(ann)
+        self._canvas.set_annotations(ann, states)
+
+        self._update_nav()
+        self._update_bbox_list()
+        self._tracker_warning.setVisible(False)
+        self._is_current_modified = False
+
+    def _go_next(self):
+        was_modified = self._is_current_modified
+        self._save_current()
+
+        next_idx = self._current_idx + 1
+        if next_idx >= len(self._sources):
+            return
+
+        # CSRT propagation if next image has no annotations OR current was manually modified
+        if self._annotations[self._current_idx] and (
+            not self._annotations[next_idx] or was_modified
+        ):
+            self._propagate_to(next_idx)
+        else:
+            self._load_image(next_idx)
+
+        self._filmstrip.blockSignals(True)
+        self._filmstrip.setCurrentRow(next_idx)
+        self._filmstrip.blockSignals(False)
+
+    def _go_prev(self):
+        self._save_current()
+        if self._current_idx > 0:
+            prev_idx = self._current_idx - 1
+            # Never propagate when going backward, only load
+            self._load_image(prev_idx)
+            
+            self._filmstrip.blockSignals(True)
+            self._filmstrip.setCurrentRow(self._current_idx)
+            self._filmstrip.blockSignals(False)
+
+    def _on_filmstrip_select(self, row: int):
+        if row == self._current_idx or row < 0:
+            return
+        was_modified = self._is_current_modified
+        self._save_current()
+        # Only force propagation if jumping FORWARD to an immediately adjacent frame
+        is_adjacent_forward = (row - self._current_idx) == 1
+        if self._annotations[self._current_idx] and (
+            not self._annotations[row] or (was_modified and is_adjacent_forward)
+        ):
+            self._propagate_to(row)
+        else:
+            self._load_image(row)
+
+    def _propagate_to(self, next_idx: int):
+        """
+        Use CSRT tracker to propagate bboxes from the current frame to next_idx.
+
+        Key insight: we track at the configured resolution so frames are always
+        comparable. The user's annotations are in ORIGINAL image pixel coordinates,
+        so we scale them down to the target resolution before init(), then scale the result back
+        up to the original resolution before storing.
+        """
+        curr_frame_640 = self._processed_frames.get(self._current_idx)   # 640x480 BGR
+        curr_anns = self._annotations[self._current_idx]                   # original px coords
+
+        if curr_frame_640 is None or not curr_anns:
+            self._load_image(next_idx)
+            return
+
+        # --- Determine the original size of the CURRENT image ---
+        curr_src = self._sources[self._current_idx]
+        try:
+            curr_pil = _to_pil(curr_src)
+            orig_w, orig_h = curr_pil.size
+        except Exception:
+            self._load_image(next_idx)
+            return
+
+        track_h, track_w = curr_frame_640.shape[:2]   # should be 480, 640
+        scale_x = track_w / orig_w
+        scale_y = track_h / orig_h
+
+        # Scale annotations from original-image coords → 640x480 tracker coords
+        scaled_anns = [
+            [b[0]*scale_x, b[1]*scale_y, b[2]*scale_x, b[3]*scale_y]
+            for b in curr_anns
+        ]
+
+        # --- Prepare the next frame at 640x480 ---
+        next_src = self._sources[next_idx]
+        try:
+            from core.image_processor import process_frame_to_array
+            next_rgb = process_frame_to_array(next_src)   # 640x480 RGB
+            next_bgr = next_rgb[:, :, ::-1].copy()
+        except Exception:
+            self._load_image(next_idx)
+            return
+
+        # Store the next frame NOW so it's cached
+        self._processed_frames[next_idx] = next_bgr
+
+        # --- Determine original size of the NEXT image (for inverse scale) ---
+        try:
+            next_pil = _to_pil(next_src)
+            next_orig_w, next_orig_h = next_pil.size
+        except Exception:
+            next_orig_w, next_orig_h = orig_w, orig_h
+
+        inv_scale_x = next_orig_w / track_w
+        inv_scale_y = next_orig_h / track_h
+
+        # --- Run CSRT tracking ---
+        self._tracker.reset()
+        ok = self._tracker.init(curr_frame_640, scaled_anns)
+
+        if not ok:
+            # Tracker unavailable or init failed — copy annotations as-is
+            import logging
+            logging.getLogger(__name__).warning(
+                "Tracker init failed; copying annotations verbatim."
+            )
+            self._annotations[next_idx] = list(curr_anns)
+            self._states[next_idx] = [BoxState.PROPAGATED] * len(curr_anns)
+            self._current_idx = next_idx
+            self._canvas.load_image(next_src)
+            self._canvas.set_annotations(self._annotations[next_idx], self._states[next_idx])
+            self._update_nav()
+            self._update_filmstrip_item(next_idx)
+            self._is_current_modified = False
+            return
+
+        results = self._tracker.update(next_bgr)
+        propagated_bboxes = []
+        all_confident = True
+
+        for tracked_bbox, confident in results:
+            # Scale result back from 640x480 → next image original coords
+            x, y, w, h = tracked_bbox
+            prop_bbox = [
+                x * inv_scale_x,
+                y * inv_scale_y,
+                w * inv_scale_x,
+                h * inv_scale_y,
+            ]
+            propagated_bboxes.append(prop_bbox)
+            if not confident:
+                all_confident = False
+
+        self._annotations[next_idx] = propagated_bboxes
+        self._states[next_idx] = [BoxState.PROPAGATED] * len(propagated_bboxes)
+
+        self._current_idx = next_idx
+        self._canvas.load_image(next_src)
+        self._canvas.set_annotations(propagated_bboxes, self._states[next_idx])
+
+        if not all_confident:
+            self._tracker_warning.setVisible(True)
+        else:
+            self._tracker_warning.setVisible(False)
+
+        self._update_nav()
+        self._update_filmstrip_item(next_idx)
+        self._is_current_modified = False
+
+    # ─── Annotations UI sync ───────────────────────────────────────────────────
+
+    def _on_annotations_changed(self):
+        self._is_current_modified = True
+        self._update_bbox_list()
+
+    def _on_box_selected(self, idx: int):
+        """Sync canvas selection → right panel list (block signals to avoid loop)."""
+        self._bbox_list.blockSignals(True)
+        self._bbox_list.setCurrentRow(idx)
+        if idx >= 0:
+            item = self._bbox_list.item(idx)
+            if item:
+                self._bbox_list.scrollToItem(item)
+        self._bbox_list.blockSignals(False)
+
+    def _on_bbox_list_select(self, row: int):
+        if row >= 0:
+            self._canvas.select_box(row)
+
+    def _update_bbox_list(self):
+        current_row = self._bbox_list.currentRow()
+        self._bbox_list.blockSignals(True)
+        self._bbox_list.clear()
+        bboxes = self._canvas.get_annotations()
+        states = self._canvas.get_annotation_states()
+        for i, (bbox, state) in enumerate(zip(bboxes, states)):
+            x, y, w, h = [round(v) for v in bbox]
+            state_icon = "🔳" if state == BoxState.PROPAGATED else "🟩"
+            
+            item = QListWidgetItem()
+            self._bbox_list.addItem(item)
+            
+            widget = BBoxListWidget(self._bbox_list, item)
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(16, 8, 16, 8)
+            layout.setSpacing(12)
+            layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            
+            lbl = QLabel(f"{state_icon} Box {i+1}: [{x},{y},{w},{h}]")
+            lbl.setStyleSheet("background: transparent; border: none; color: white; font-size: 13px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(lbl, 1)
+            
+            trash = QPushButton("🗑")
+            trash.setFixedSize(26, 26)
+            trash.setStyleSheet("QPushButton { background: transparent; color: #ff2a55; border: none; border-radius: 4px; } QPushButton:hover { background: rgba(255, 42, 85, 0.2); }")
+            trash.setCursor(Qt.CursorShape.PointingHandCursor)
+            trash.clicked.connect(lambda _, idx=i: self._delete_box_by_index(idx))
+            layout.addWidget(trash)
+            
+            item.setSizeHint(widget.sizeHint())
+            self._bbox_list.setItemWidget(item, widget)
+
+        if 0 <= current_row < self._bbox_list.count():
+            self._bbox_list.setCurrentRow(current_row)
+        self._bbox_list.blockSignals(False)
+
+    def _delete_box_by_index(self, idx: int):
+        self._canvas.select_box(idx)
+        self._canvas.delete_selected()
+
+    def _delete_current_image(self):
+        self._delete_image_by_index(self._current_idx)
+
+    def _delete_image_by_index(self, idx: int):
+        if idx < 0 or idx >= len(self._sources):
+            return
+        
+        self._sources.pop(idx)
+        self._annotations.pop(idx)
+        self._states.pop(idx)
+        
+        new_frames = {}
+        for old_idx, frame in self._processed_frames.items():
+            if old_idx < idx:
+                new_frames[old_idx] = frame
+            elif old_idx > idx:
+                new_frames[old_idx - 1] = frame
+        self._processed_frames = new_frames
+
+        if len(self._sources) == 0:
+            self.cancelled.emit()
+            return
+            
+        if self._current_idx == idx:
+            next_idx = min(idx, len(self._sources) - 1)
+            self._current_idx = next_idx
+            self._populate_filmstrip()
+            self._load_image(next_idx)
+        else:
+            if self._current_idx > idx:
+                self._current_idx -= 1
+            self._populate_filmstrip()
+            self._update_nav()
+            self._filmstrip.setCurrentRow(self._current_idx)
+
+    def _update_nav(self):
+        n = len(self._sources)
+        idx = self._current_idx
+        self._img_counter.setText(f"{idx+1} / {n}")
+        self._prev_btn.setEnabled(idx > 0)
+        self._next_btn.setEnabled(idx < n - 1)
+
+    def _update_progress_label(self):
+        annotated = sum(1 for a in self._annotations if a)
+        self._progress_label.setText(f"{annotated} / {len(self._sources)} annotated")
+
+    # ─── Done / Save / Sync ────────────────────────────────────────────────────
+
+    def _on_done(self):
+        self._save_current()
+
+        # Check for unannotated images
+        unannotated = sum(1 for a in self._annotations if not a)
+        if unannotated > 0:
+            reply = QMessageBox.question(
+                self, "Unannotated Images",
+                f"{unannotated} image(s) have no bounding boxes and will be skipped.\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        dialog = SyncProgressDialog(self)
+        dialog.show()
+
+        try:
+            self._execute_save(dialog)
+        except Exception as exc:
+            dialog.close()
+            QMessageBox.critical(self, "Save Error", str(exc))
+            return
+
+        dialog.close()
+
+    def _execute_save(self, progress_dialog: SyncProgressDialog):
+        """Process images, update COCO JSON, optionally sync with HF."""
+        from PyQt6.QtWidgets import QApplication
+
+        cfg = self.dm.config
+
+        # Step 1: Pull remote if HF-backed
+        if cfg and cfg.is_synced:
+            progress_dialog.set_status("Checking for remote changes…")
+            QApplication.processEvents()
+            self._do_pull_sync(cfg)
+
+        # Step 2: Save images
+        progress_dialog.set_status("Processing and saving images…")
+        QApplication.processEvents()
+
+        saved_paths: list[Path] = []
+        annotations_per_image: list[list[list[float]]] = []
+        start_num = self.dm.next_image_number(self.class_name)
+
+        for i, (src, bboxes) in enumerate(zip(self._sources, self._annotations)):
+            if not bboxes:
+                continue
+            num = start_num + len(saved_paths)
+            out_path = self.dm.build_image_path(self.class_name, num)
+            try:
+                process_frame(src, out_path)
+                saved_paths.append(out_path)
+                annotations_per_image.append(bboxes)
+            except OSError as exc:
+                if "No space left" in str(exc) or "disk" in str(exc).lower():
+                    raise OSError("Disk full — could not save images. Free up space and try again.")
+                raise
+            progress_dialog.set_determinate(i + 1, len(self._sources))
+            QApplication.processEvents()
+
+        # Step 3: Update COCO JSON
+        progress_dialog.set_status("Updating annotation file…")
+        QApplication.processEvents()
+        self.dm.add_batch(self.class_name, saved_paths, annotations_per_image)
+        self.dm.save_coco()
+
+        # Step 4: Push to HF
+        if cfg and cfg.is_synced:
+            progress_dialog.set_status("Uploading to Hugging Face Hub…")
+            QApplication.processEvents()
+            self._do_push_sync(cfg, saved_paths)
+
+        # Emit done signal
+        self.done.emit(
+            self.class_name,
+            [str(p) for p in saved_paths],
+            annotations_per_image,
+        )
+
+    def _do_pull_sync(self, cfg):
+        from core.hf_sync import HFSync, retrieve_token
+        token = retrieve_token(cfg.hf_token_key)
+        if not token:
+            return
+        try:
+            sync = HFSync(cfg.hf_repo, token)
+            remote_coco = sync.pull(self.dm.root)
+            if remote_coco:
+                self.dm.merge_remote_coco(remote_coco)
+        except Exception:
+            pass  # Non-fatal: continue with local state
+
+    def _do_push_sync(self, cfg, saved_paths: list[Path]):
+        from core.hf_sync import HFSync, retrieve_token
+        token = retrieve_token(cfg.hf_token_key)
+        if not token:
+            return
+        try:
+            sync = HFSync(cfg.hf_repo, token)
+            changed = {str(p.relative_to(self.dm.root)) for p in saved_paths}
+            coco_rel = str(Path("annotations") / "instances_all.json")
+            changed.add(coco_rel)
+            count = sync.push(self.dm.root, changed)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Sync Warning",
+                f"Images saved locally but HF push failed:\n{exc}\n\nYou can retry sync from the sidebar."
+            )

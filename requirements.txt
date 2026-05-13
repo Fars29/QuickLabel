@@ -1,0 +1,26 @@
+# QuickLabel — Requirements
+# Python 3.10+ required
+#
+# IMPORTANT: Do NOT install opencv-python alongside opencv-contrib-python.
+# opencv-contrib-python already includes all standard cv2 features + contrib trackers (CSRT, etc.)
+
+# GUI Framework
+PyQt6>=6.6.0
+
+# Computer Vision (contrib required for CSRT tracker)
+opencv-contrib-python>=4.9.0
+
+# Image Processing
+Pillow>=10.0.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Hugging Face Hub Integration
+huggingface_hub>=0.23.0
+
+# Secure Token Storage (OS keyring / Windows Credential Manager)
+keyring>=24.0.0
+
+# Numerical Computing
+numpy>=1.24.0
