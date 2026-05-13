@@ -34,8 +34,8 @@ from config import (
     COCO_JSON_FILE,
     DATASET_CONFIG_FILE,
     IMAGES_DIR,
-    IMAGE_HEIGHT,
-    IMAGE_WIDTH,
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
 )
 
 
@@ -327,8 +327,8 @@ class DatasetManager:
             coco_image = COCOImage(
                 id=self.dataset.next_image_id(),
                 file_name=file_name,
-                width=IMAGE_WIDTH,
-                height=IMAGE_HEIGHT,
+                width=TARGET_WIDTH,
+                height=TARGET_HEIGHT,
             )
             self.dataset.images.append(coco_image)
 

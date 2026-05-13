@@ -26,38 +26,34 @@ import config
 def process_frame(
     source: Union[np.ndarray, Image.Image, str, Path],
     output_path: Union[str, Path],
-) -> tuple[Path, int, int]:
+) -> tuple[Path, int, int, tuple[float, int, int]]:
     """
     Process a single image through the full pipeline:
     1. Convert to PIL RGB if needed.
-    2. Letterbox-resize to config.IMAGE_WIDTH × config.IMAGE_HEIGHT.
+    2. Letterbox-resize to config.TARGET_WIDTH × config.TARGET_HEIGHT.
     3. Save as JPEG at config.JPEG_QUALITY, with no EXIF metadata.
 
-    Args:
-        source: numpy array (BGR or RGB), PIL Image, or file path.
-        output_path: Destination .jpg path.
-
     Returns:
-        (output_path, width, height)
+        (output_path, width, height, transform_metadata)
     """
     pil_img = _to_pil(source)
-    pil_img = letterbox(pil_img, config.IMAGE_WIDTH, config.IMAGE_HEIGHT)
+    pil_img, transform = letterbox(pil_img, config.TARGET_WIDTH, config.TARGET_HEIGHT)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _save_jpeg(pil_img, output_path)
-    return output_path, config.IMAGE_WIDTH, config.IMAGE_HEIGHT
+    return output_path, config.TARGET_WIDTH, config.TARGET_HEIGHT, transform
 
 
 def process_frame_to_array(
     source: Union[np.ndarray, Image.Image, str, Path],
-) -> np.ndarray:
+) -> tuple[np.ndarray, tuple[float, int, int]]:
     """
     Process a frame (letterbox + resize) and return as a numpy array (RGB uint8).
     Used internally when we need the processed frame for CSRT tracker init.
     """
     pil_img = _to_pil(source)
-    pil_img = letterbox(pil_img, config.IMAGE_WIDTH, config.IMAGE_HEIGHT)
-    return np.array(pil_img)
+    pil_img, transform = letterbox(pil_img, config.TARGET_WIDTH, config.TARGET_HEIGHT)
+    return np.array(pil_img), transform
 
 
 # ─── Letterbox ─────────────────────────────────────────────────────────────────
@@ -67,11 +63,14 @@ def letterbox(
     target_w: int,
     target_h: int,
     fill_color: tuple[int, int, int] = (0, 0, 0),
-) -> Image.Image:
+) -> tuple[Image.Image, tuple[float, int, int]]:
     """
     Resize img to fit within (target_w × target_h) while preserving aspect ratio.
     Pads the shorter dimension with fill_color (default: black).
     Uses LANCZOS resampling for high-quality downscale.
+
+    Returns:
+        (letterboxed_image, (scale, pad_x, pad_y))
     """
     src_w, src_h = img.size
     scale = min(target_w / src_w, target_h / src_h)
@@ -81,10 +80,49 @@ def letterbox(
     resized = img.resize((new_w, new_h), Image.LANCZOS)
 
     canvas = Image.new("RGB", (target_w, target_h), fill_color)
-    offset_x = (target_w - new_w) // 2
-    offset_y = (target_h - new_h) // 2
-    canvas.paste(resized, (offset_x, offset_y))
-    return canvas
+    pad_x = (target_w - new_w) // 2
+    pad_y = (target_h - new_h) // 2
+    canvas.paste(resized, (pad_x, pad_y))
+    
+    return canvas, (scale, pad_x, pad_y)
+
+
+def transform_bbox(
+    bbox: list[float], 
+    scale: float, 
+    pad_x: int, 
+    pad_y: int
+) -> list[float]:
+    """
+    Transform a bounding box [x, y, w, h] from original image coordinates
+    to letterboxed image coordinates.
+    """
+    x, y, w, h = bbox
+    return [
+        x * scale + pad_x,
+        y * scale + pad_y,
+        w * scale,
+        h * scale
+    ]
+
+
+def untransform_bbox(
+    bbox: list[float], 
+    scale: float, 
+    pad_x: int, 
+    pad_y: int
+) -> list[float]:
+    """
+    Transform a bounding box [x, y, w, h] from letterboxed image coordinates
+    back to original image coordinates.
+    """
+    x, y, w, h = bbox
+    return [
+        (x - pad_x) / scale,
+        (y - pad_y) / scale,
+        w / scale,
+        h / scale
+    ]
 
 
 # ─── Format Conversion ─────────────────────────────────────────────────────────

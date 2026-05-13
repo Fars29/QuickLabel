@@ -26,18 +26,24 @@ from config import (
     BBOX_COLOR_PROPAGATED, FILMSTRIP_WIDTH, THUMBNAIL_SIZE,
 )
 from core.dataset_manager import DatasetManager
-from core.image_processor import process_frame, make_thumbnail, _to_pil
+from core.image_processor import (
+    process_frame, 
+    process_frame_to_array,
+    make_thumbnail, 
+    transform_bbox,
+    _to_pil
+)
 from core.tracker import MultiBBoxTracker
 from ui.components.bbox_canvas import BBoxCanvas, BoxState
 
 _BTN_PRIMARY = f"""
 QPushButton {{
-    background: {COLOR_HIGHLIGHT}; color: white; border: none;
+    background: {COLOR_HIGHLIGHT}; color: {COLOR_BG}; border: none;
     border-radius: 8px; padding: 10px 20px; font-size: 13px;
-    font-weight: 600; font-family: "Segoe UI", Inter, Arial;
+    font-weight: 700; font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{ background: #ff6b7f; }}
-QPushButton:pressed {{ background: #c73652; }}
+QPushButton:hover {{ background: #33e5ff; }}
+QPushButton:pressed {{ background: #00a2cc; }}
 QPushButton:disabled {{ background: {COLOR_ACCENT}; color: {COLOR_TEXT_MUTED}; }}
 """
 
@@ -132,8 +138,14 @@ class ReviewThumbnail(QFrame):
         layout.addWidget(self.txt_lbl)
         
         self.trash = QPushButton("🗑", self)
-        self.trash.setFixedSize(22, 22)
-        self.trash.setStyleSheet(f"QPushButton {{ background: {COLOR_DANGER}; color: white; border-radius: 4px; font-size: 12px; }} QPushButton:hover {{ background: #ff6b7f; }}")
+        self.trash.setFixedSize(24, 24)
+        self.trash.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.trash.setStyleSheet(f"""
+            QPushButton {{ 
+                background: rgba(0, 0, 0, 0.4); color: white; border: none; font-size: 14px; border-radius: 4px;
+            }}
+            QPushButton:hover {{ background: #e74c3c; }}
+        """)
         self.trash.move(self.width() - 32, 4)
         self.trash.setVisible(False)
         self.trash.clicked.connect(self.removed.emit)
@@ -252,10 +264,11 @@ class ReviewScreen(QWidget):
         back_btn.clicked.connect(self.cancelled.emit)
         top_bar_layout.addWidget(back_btn)
 
-        # Class badge (snellier)
+        # Class badge (cleaner, bordered)
         self._class_badge = QLabel(self.class_name)
         self._class_badge.setStyleSheet(
-            f"color: white; background: {COLOR_HIGHLIGHT}; border-radius: 6px; "
+            f"color: {COLOR_TEXT}; background: {COLOR_BG}; "
+            f"border: 1px solid {COLOR_HIGHLIGHT}; border-radius: 6px; "
             f"padding: 0px 12px; font-size: 13px; font-weight: 700; "
             f"margin-left: 4px;"
         )
@@ -285,8 +298,28 @@ class ReviewScreen(QWidget):
 
         # Save Dataset at top right
         self._done_btn = QPushButton("✓ Save Dataset")
-        self._done_btn.setStyleSheet(_BTN_PRIMARY)
-        self._done_btn.setFixedHeight(36)
+        self._done_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #061a11; 
+                color: #00f5a0;
+                border: 2px solid #00f5a0; 
+                border-radius: 8px;
+                padding: 8px 20px; 
+                font-size: 13px; 
+                font-weight: 800;
+                letter-spacing: 0.5px;
+            }}
+            QPushButton:hover {{ 
+                background: #00f5a0; 
+                color: #061a11;
+                border: 2px solid #00f5a0;
+            }}
+            QPushButton:pressed {{ 
+                background: #00c480;
+                top: 1px;
+            }}
+        """)
+        self._done_btn.setFixedHeight(40)
         self._done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._done_btn.clicked.connect(self._on_done)
         top_bar_layout.addWidget(self._done_btn)
@@ -423,11 +456,11 @@ class ReviewScreen(QWidget):
         # We use the configured resolution so that all frames are the same size.
         try:
             from core.image_processor import process_frame_to_array
-            rgb_arr = process_frame_to_array(src)          # Config RGB
+            rgb_arr, _ = process_frame_to_array(src)          # Config RGB
             frame_bgr = rgb_arr[:, :, ::-1].copy()        # → BGR for OpenCV
         except Exception:
             import config
-            frame_bgr = np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 3), dtype=np.uint8)
+            frame_bgr = np.zeros((config.TARGET_HEIGHT, config.TARGET_WIDTH, 3), dtype=np.uint8)
 
         self._processed_frames[idx] = frame_bgr  # always config resolution BGR
         self._canvas.load_image(src)              # canvas uses ORIGINAL resolution
@@ -439,7 +472,6 @@ class ReviewScreen(QWidget):
 
         self._update_nav()
         self._update_bbox_list()
-        self._tracker_warning.setVisible(False)
         self._is_current_modified = False
 
     def _go_next(self):
@@ -526,7 +558,7 @@ class ReviewScreen(QWidget):
         next_src = self._sources[next_idx]
         try:
             from core.image_processor import process_frame_to_array
-            next_rgb = process_frame_to_array(next_src)   # 640x480 RGB
+            next_rgb, _ = process_frame_to_array(next_src)   # 640x480 RGB
             next_bgr = next_rgb[:, :, ::-1].copy()
         except Exception:
             self._load_image(next_idx)
@@ -590,19 +622,13 @@ class ReviewScreen(QWidget):
         self._canvas.set_annotations(propagated_bboxes, self._states[next_idx])
 
         if not all_confident:
-            self._tracker_warning.setVisible(True)
-        else:
-            self._tracker_warning.setVisible(False)
-
+            pass # Keep simplified for now
+        
         self._update_nav()
         self._update_filmstrip_item(next_idx)
         self._is_current_modified = False
 
     # ─── Annotations UI sync ───────────────────────────────────────────────────
-
-    def _on_annotations_changed(self):
-        self._is_current_modified = True
-        self._update_bbox_list()
 
     def _on_box_selected(self, idx: int):
         """Sync canvas selection → right panel list (block signals to avoid loop)."""
@@ -613,6 +639,10 @@ class ReviewScreen(QWidget):
             if item:
                 self._bbox_list.scrollToItem(item)
         self._bbox_list.blockSignals(False)
+
+    def _on_annotations_changed(self):
+        self._is_current_modified = True
+        self._update_bbox_list()
 
     def _on_bbox_list_select(self, row: int):
         if row >= 0:
@@ -644,8 +674,14 @@ class ReviewScreen(QWidget):
             layout.addWidget(lbl, 1)
             
             trash = QPushButton("🗑")
-            trash.setFixedSize(26, 26)
-            trash.setStyleSheet("QPushButton { background: transparent; color: #ff2a55; border: none; border-radius: 4px; } QPushButton:hover { background: rgba(255, 42, 85, 0.2); }")
+            trash.setFixedSize(28, 28)
+            trash.setCursor(Qt.CursorShape.PointingHandCursor)
+            trash.setStyleSheet(f"""
+                QPushButton {{ 
+                    background: transparent; color: {COLOR_TEXT_MUTED}; border: none; border-radius: 4px; font-size: 14px;
+                }}
+                QPushButton:hover {{ background: #e74c3c; color: white; }}
+            """)
             trash.setCursor(Qt.CursorShape.PointingHandCursor)
             trash.clicked.connect(lambda _, idx=i: self._delete_box_by_index(idx))
             layout.addWidget(trash)
@@ -761,9 +797,13 @@ class ReviewScreen(QWidget):
             num = start_num + len(saved_paths)
             out_path = self.dm.build_image_path(self.class_name, num)
             try:
-                process_frame(src, out_path)
+                _, _, _, transform = process_frame(src, out_path)
+                scale, px, py = transform
+                # Transform each bbox to match the letterboxed output image
+                transformed = [transform_bbox(bb, scale, px, py) for bb in bboxes]
+                
                 saved_paths.append(out_path)
-                annotations_per_image.append(bboxes)
+                annotations_per_image.append(transformed)
             except OSError as exc:
                 if "No space left" in str(exc) or "disk" in str(exc).lower():
                     raise OSError("Disk full — could not save images. Free up space and try again.")

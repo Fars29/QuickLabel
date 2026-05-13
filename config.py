@@ -15,8 +15,8 @@ APP_VERSION = "1.0.0"
 APP_AUTHOR = "QuickLabel Team"
 
 # ─── Image Processing ──────────────────────────────────────────────────────────
-IMAGE_WIDTH = 640
-IMAGE_HEIGHT = 480
+TARGET_WIDTH = 640
+TARGET_HEIGHT = 480
 JPEG_QUALITY = 85           # 1–95; 85 is a good trade-off for Detic training
 CAPTURE_FPS = 5             # Frames per second captured while SPACE is held
 
@@ -39,7 +39,7 @@ COLOR_BG = "#0d0e17"           # Deep navy-black background
 COLOR_SURFACE = "#13162b"      # Card / panel surface (solid, slightly lighter than BG)
 COLOR_SURFACE2 = "#1a1f3a"     # Secondary surface (e.g. top bars, dialogs)
 COLOR_ACCENT = "#1e2d5a"       # Accent borders / dividers
-COLOR_HIGHLIGHT = "#ff477e"    # Vibrant primary action color (neon rose)
+COLOR_HIGHLIGHT = "#00d2ff"    # Vibrant primary action color (Electric Blue)
 COLOR_TEXT = "#f0f2ff"         # Crisp near-white text
 COLOR_TEXT_MUTED = "#7b82a8"   # Muted text
 COLOR_SUCCESS = "#00f5a0"      # Neon green for success / confirmed
@@ -51,7 +51,7 @@ COLOR_DANGER = "#ff2a55"       # Bright red for delete
 BBOX_COLOR_DRAWING = "#00f5a0"    # In-progress draw — green dashed
 BBOX_COLOR_CONFIRMED = "#00f5a0"  # Confirmed annotation
 BBOX_COLOR_PROPAGATED = "#00f5a0" # Tracked (same green, auto-confirmed)
-BBOX_COLOR_SELECTED = "#ffb000"   # Currently selected box (amber)
+BBOX_COLOR_SELECTED = "#00d2ff"   # Currently selected box (blue)
 
 # ─── Typography ────────────────────────────────────────────────────────────────
 FONT_FAMILY = "Segoe UI, Inter, Arial, sans-serif"

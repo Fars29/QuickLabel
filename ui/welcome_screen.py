@@ -37,6 +37,7 @@ from config import (
     COLOR_HIGHLIGHT,
     COLOR_SUCCESS,
     COLOR_SURFACE,
+    COLOR_SURFACE2,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
 )
@@ -57,26 +58,21 @@ QPushButton {{
     font-weight: 600;
     font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{ background: #ff6b7f; }}
-QPushButton:pressed {{ background: #c73652; }}
+QPushButton:hover {{ background: #33dbff; }}
+QPushButton:pressed {{ background: #00a2cc; }}
 QPushButton:disabled {{ background: {COLOR_ACCENT}; color: {COLOR_TEXT_MUTED}; }}
 """
 
 _BTN_OUTLINE = f"""
 QPushButton {{
-    background: transparent;
-    color: {COLOR_TEXT};
-    border: 2px solid {COLOR_ACCENT};
-    border-radius: 8px;
+    background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+    border: 1px solid {COLOR_ACCENT}; border-radius: 6px;
     padding: 9px 22px;
-    font-size: 13px;
+    font-size: 12px; font-weight: 600;
     font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{
-    border-color: {COLOR_HIGHLIGHT};
-    color: {COLOR_HIGHLIGHT};
-}}
-QPushButton:pressed {{ background: rgba(233,69,96,0.1); }}
+QPushButton:hover {{ background: {COLOR_ACCENT}; border-color: {COLOR_HIGHLIGHT}; }}
+QPushButton:pressed {{ background: {COLOR_BG}; }}
 """
 
 _INPUT_STYLE = f"""
@@ -391,7 +387,7 @@ class WelcomeScreen(QWidget):
             rf_layout.addWidget(resume_lbl, 1)
 
             resume_btn = QPushButton("  Resume  ")
-            resume_btn.setStyleSheet(_BTN_PRIMARY)
+            resume_btn.setStyleSheet(_BTN_OUTLINE)
             resume_btn.setMinimumHeight(38)
             resume_btn.clicked.connect(lambda: self._open_folder(last))
             rf_layout.addWidget(resume_btn)

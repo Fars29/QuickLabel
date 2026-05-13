@@ -60,9 +60,7 @@ QListWidget {{
     background: {COLOR_SURFACE};
     color: {COLOR_TEXT};
     border: 2px solid {COLOR_HIGHLIGHT};
-    border-top: none;
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
+    border-radius: 8px;
     font-size: 13px;
     font-family: "Segoe UI", Inter, Arial;
     padding: 4px;
@@ -133,14 +131,14 @@ class ClassInput(QWidget):
                 background: #0d0e17;
                 width: 8px;
                 border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
+            }}
+            QScrollBar::handle:vertical {{
                 background: #1e2d5a;
                 border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #ff477e;
-            }
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {COLOR_HIGHLIGHT};
+            }}
         """)
         self._dropdown.setFixedWidth(300)
         self._dropdown.setVisible(False)

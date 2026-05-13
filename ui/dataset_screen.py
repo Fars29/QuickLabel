@@ -33,30 +33,24 @@ from ui.components.sidebar import Sidebar
 
 _BTN_PRIMARY = f"""
 QPushButton {{
-    background: {COLOR_HIGHLIGHT}; color: white; border: none;
+    background: {COLOR_HIGHLIGHT}; color: {COLOR_BG}; border: none;
     border-radius: 8px; padding: 10px 24px; font-size: 13px;
-    font-weight: 600; font-family: "Segoe UI", Inter, Arial;
+    font-weight: 700; font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{ background: #ff6b7f; }}
-QPushButton:pressed {{ background: #c73652; }}
+QPushButton:hover {{ background: #33e5ff; }}
+QPushButton:pressed {{ background: #00a2cc; }}
 QPushButton:disabled {{ background: {COLOR_ACCENT}; color: {COLOR_TEXT_MUTED}; }}
 """
 
 _BTN_SECONDARY = f"""
 QPushButton {{
-    background: transparent;
-    color: {COLOR_TEXT};
-    border: 2px solid {COLOR_ACCENT};
-    border-radius: 8px;
+    background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+    border: 1px solid {COLOR_ACCENT}; border-radius: 6px;
     padding: 9px 18px;
-    font-size: 13px;
+    font-size: 12px; font-weight: 600;
     font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{
-    border-color: {COLOR_HIGHLIGHT};
-    color: {COLOR_HIGHLIGHT};
-}}
-QPushButton:pressed {{ background: rgba(233,69,96,0.1); }}
+QPushButton:hover {{ background: {COLOR_ACCENT}; border-color: {COLOR_HIGHLIGHT}; }}
 QPushButton:disabled {{ border-color: {COLOR_ACCENT}; color: {COLOR_TEXT_MUTED}; }}
 """
 
@@ -129,13 +123,15 @@ class ThumbnailWidget(QFrame):
         # Overlay trash button (hidden by default)
         if show_remove:
             self._trash_btn = QPushButton("🗑", self)
-            self._trash_btn.setFixedSize(22, 22)
-            self._trash_btn.setStyleSheet(
-                f"QPushButton {{ background: {COLOR_HIGHLIGHT}; color: white; "
-                f"border: none; border-radius: 4px; font-size: 11px; }}"
-                f"QPushButton:hover {{ background: #ff6b7f; }}"
-            )
-            self._trash_btn.move(self.width() - 26, 4)
+            self._trash_btn.setFixedSize(24, 24)
+            self._trash_btn.setStyleSheet(f"""
+                QPushButton {{ 
+                    background: rgba(0, 0, 0, 0.4); color: white; 
+                    border: none; border-radius: 4px; font-size: 13px; 
+                }}
+                QPushButton:hover {{ background: #e74c3c; }}
+            """)
+            self._trash_btn.move(self.width() - 28, 4)
             self._trash_btn.setVisible(False)
             self._trash_btn.clicked.connect(lambda: self.removed.emit(self))
         else:
@@ -282,14 +278,23 @@ class CameraTab(QWidget):
         self._cam_combo.setStyleSheet(f"""
             QComboBox {{
                 background: {COLOR_BG}; color: {COLOR_TEXT};
-                border: 2px solid {COLOR_ACCENT}; border-radius: 6px;
-                padding: 2px 6px; font-size: 12px;
+                border: 2px solid {COLOR_ACCENT}; 
+                border-top: 2px solid {COLOR_ACCENT};
+                border-radius: 6px;
+                padding: 2px 24px 2px 8px; font-size: 12px;
             }}
-            QComboBox::drop-down {{ border: none; width: 20px; }}
-            QComboBox::down-arrow {{ width: 0; height: 0;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid {COLOR_TEXT}; }}
+            QComboBox::drop-down {{ 
+                border: none; 
+                border-left: none;
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 24px; 
+            }}
+            QComboBox::down-arrow {{ 
+                image: url(down_arrow.png);
+                width: 14px; height: 14px;
+            }}
+            QComboBox::separator {{ width: 0px; }}
             QComboBox QAbstractItemView {{
                 background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
                 border: 1px solid {COLOR_ACCENT};
@@ -355,19 +360,28 @@ class CameraTab(QWidget):
         self._res_combo.addItems(["640x480", "640x640", "800x600", "1280x720"])
         self._res_combo.setFixedHeight(32)
         import config
-        curr_res = f"{config.IMAGE_WIDTH}x{config.IMAGE_HEIGHT}"
+        curr_res = f"{config.TARGET_WIDTH}x{config.TARGET_HEIGHT}"
         self._res_combo.setCurrentText(curr_res)
         self._res_combo.setStyleSheet(f"""
             QComboBox {{
                 background: {COLOR_BG}; color: {COLOR_TEXT};
-                border: 2px solid {COLOR_ACCENT}; border-radius: 6px;
-                padding: 2px 6px; font-size: 12px;
+                border: 2px solid {COLOR_ACCENT}; 
+                border-top: 2px solid {COLOR_ACCENT};
+                border-radius: 6px;
+                padding: 2px 24px 2px 8px; font-size: 12px;
             }}
-            QComboBox::drop-down {{ border: none; width: 20px; }}
-            QComboBox::down-arrow {{ width: 0; height: 0;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid {COLOR_TEXT}; }}
+            QComboBox::drop-down {{ 
+                border: none; 
+                border-left: none;
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 24px; 
+            }}
+            QComboBox::down-arrow {{ 
+                image: url(down_arrow.png);
+                width: 14px; height: 14px;
+            }}
+            QComboBox::separator {{ width: 0px; }}
             QComboBox QAbstractItemView {{
                 background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
                 border: 1px solid {COLOR_ACCENT};
@@ -389,7 +403,18 @@ class CameraTab(QWidget):
         self._start_btn.clicked.connect(self._toggle_camera)
         ctrl_layout.addWidget(self._start_btn)
 
+        # Divider after camera button
+        d4 = QFrame(); d4.setFixedHeight(1)
+        d4.setStyleSheet(f"background: {COLOR_ACCENT}; border: none;")
+        ctrl_layout.addWidget(d4)
+
         ctrl_layout.addStretch()
+
+        # Record Label
+        rec_lbl = QLabel("RECORD")
+        rec_lbl.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 10px; font-weight: 700; letter-spacing: 1px; border: none;")
+        rec_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ctrl_layout.addWidget(rec_lbl)
 
         # Record pill at the bottom of controls
         self._record_widget = QFrame()
@@ -609,8 +634,8 @@ class CameraTab(QWidget):
         parts = text.split('x')
         if len(parts) == 2:
             import config
-            config.IMAGE_WIDTH = int(parts[0])
-            config.IMAGE_HEIGHT = int(parts[1])
+            config.TARGET_WIDTH = int(parts[0])
+            config.TARGET_HEIGHT = int(parts[1])
             if self._worker and self._worker.isRunning():
                 self._restart_camera()
 
@@ -712,7 +737,7 @@ class DatasetScreen(QWidget):
         top_layout.addStretch()
 
         self._review_btn = QPushButton("Annotate →")
-        self._review_btn.setStyleSheet(_BTN_PRIMARY)
+        self._review_btn.setStyleSheet(_BTN_SECONDARY)
         self._review_btn.setFixedHeight(38)
         self._review_btn.setEnabled(False)
         self._review_btn.clicked.connect(self._on_review)
@@ -761,8 +786,13 @@ class DatasetScreen(QWidget):
         info_row.addStretch()
         
         clear_btn = QPushButton("Clear All")
-        clear_btn.setStyleSheet(f"color: {COLOR_DANGER}; background: transparent; border: none; font-size: 11px;")
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{ 
+                color: {COLOR_TEXT_MUTED}; background: transparent; border: none; font-size: 11px; font-weight: 600; 
+            }}
+            QPushButton:hover {{ color: {COLOR_HIGHLIGHT}; text-decoration: underline; }}
+        """)
         clear_btn.clicked.connect(self._clear_sources)
         info_row.addWidget(clear_btn)
         carousel_layout.addLayout(info_row)
@@ -830,8 +860,21 @@ class DatasetScreen(QWidget):
         self._update_review_btn()
 
     def _add_sources(self, sources: list):
+        import numpy as np
         for s in sources:
-            if s not in self._queued_sources:
+            # Check if source already exists in self._queued_sources
+            exists = False
+            for existing in self._queued_sources:
+                if isinstance(s, np.ndarray) and isinstance(existing, np.ndarray):
+                    if np.array_equal(s, existing):
+                        exists = True
+                        break
+                elif not isinstance(s, np.ndarray) and not isinstance(existing, np.ndarray):
+                    if s == existing:
+                        exists = True
+                        break
+            
+            if not exists:
                 self._queued_sources.append(s)
         self._rebuild_strip()
         self._update_review_btn()

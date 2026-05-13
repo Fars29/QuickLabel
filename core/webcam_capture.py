@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
+from PyQt6.QtMultimedia import QMediaDevices
 
 from config import CAPTURE_FPS, WEBCAM_BUFFER_SIZE, WEBCAM_INDEXES_TO_TRY
 
@@ -76,22 +77,30 @@ class WebcamWorker(QThread):
     # ─── QThread Run ───────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Main loop: open camera, emit frames, handle capture."""
+        """Main loop: scan cameras, open selected one, emit frames, handle capture."""
+        # 1. Scan available cameras using QtMultimedia (the correct way)
+        cameras = self.scan_cameras()
+        self.cameras_found.emit(cameras)
+        
+        # 2. Try to open the selected camera index
         cap = self._open_camera(self._camera_index)
+        
+        # 3. Fallback: if selected index fails but we found cameras, try the first available one
+        if cap is None and cameras:
+            for idx, name in cameras:
+                if idx != self._camera_index:
+                    cap = self._open_camera(idx)
+                    if cap is not None:
+                        self._camera_index = idx
+                        break
+        
         if cap is None:
-            # Try scanning all cameras first
-            cameras = self.scan_cameras()
-            self.cameras_found.emit(cameras)
             self.error.emit(
                 "No webcam found.\n"
-                "Please connect a webcam and restart the application.\n"
-                f"Tried camera indexes: {WEBCAM_INDEXES_TO_TRY}"
+                "Please connect a webcam and restart the application."
             )
             return
 
-        # Scan cameras in background after opening
-        cameras = self.scan_cameras()
-        self.cameras_found.emit(cameras)
         self.active_camera_index.emit(self._camera_index)
 
         self._cap = cap
@@ -116,8 +125,8 @@ class WebcamWorker(QThread):
 
                 import config
                 h, w = frame.shape[:2]
-                if w != config.IMAGE_WIDTH or h != config.IMAGE_HEIGHT:
-                    frame = cv2.resize(frame, (config.IMAGE_WIDTH, config.IMAGE_HEIGHT), interpolation=cv2.INTER_AREA)
+                if w != config.TARGET_WIDTH or h != config.TARGET_HEIGHT:
+                    frame = cv2.resize(frame, (config.TARGET_WIDTH, config.TARGET_HEIGHT), interpolation=cv2.INTER_AREA)
 
                 # Emit preview frame as QImage
                 q_image = self._bgr_to_qimage(frame)
@@ -142,21 +151,22 @@ class WebcamWorker(QThread):
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, WEBCAM_BUFFER_SIZE)
             import config
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.IMAGE_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.IMAGE_HEIGHT)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.TARGET_WIDTH)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.TARGET_HEIGHT)
             return cap
         cap.release()
         return None
 
     @staticmethod
     def scan_cameras() -> list:
-        """Scan indexes 0-9 and return list of (index, label) for cameras that open."""
+        """Use QtMultimedia to detect available cameras and their names."""
         found = []
-        for idx in range(10):
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW if _is_windows() else cv2.CAP_ANY)
-            if cap.isOpened():
-                found.append((idx, f"Camera {idx}"))
-                cap.release()
+        devices = QMediaDevices.videoInputs()
+        for i, device in enumerate(devices):
+            name = device.description()
+            if not name:
+                name = f"Camera {i}"
+            found.append((i, name))
         return found
 
     @staticmethod
