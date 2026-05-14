@@ -71,7 +71,7 @@ Images are saved as JPEG at quality 85, letterboxed to the target resolution (de
 
 ## Team sync
 
-QuickLabel uses the [Hugging Face Hub](https://huggingface.co/docs/huggingface_hub) as its sync backend. Before each push it pulls remote changes and merges the COCO JSON automatically, re-numbering IDs to avoid conflicts. Your HF token is stored in the OS keyring, never in plaintext.
+QuickLabel uses the [Hugging Face Hub](https://huggingface.co/docs/huggingface_hub) as its sync backend. Before each push it pulls remote changes and merges the COCO JSON automatically, re-numbering IDs to avoid conflicts. Your HF token is stored in the OS keyring, not in plaintext.
 
 ---
 
