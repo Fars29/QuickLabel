@@ -1,6 +1,7 @@
 <p align="center">
   <img src="QuickLabel.png" width="120" alt="QuickLabel logo"/>
 </p>
+
 # QuickLabel
 
 **Collaborative dataset annotation for object detection. Built for speed.**
