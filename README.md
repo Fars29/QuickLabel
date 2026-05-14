@@ -1,8 +1,20 @@
+<p align="center">
+  <img src="QuickLabel.png" width="150" alt="QuickLabel logo"/>
+</p>
+
 # QuickLabel
 
 **Collaborative dataset annotation for object detection. Built for speed.**
 
 QuickLabel lets small teams build COCO-format datasets together without friction. Capture images from a webcam, drag in files, draw bounding boxes, and push everything to a shared Hugging Face repository in one click.
+
+<p align="center">
+<table><tr><td>
+
+https://github.com/user-attachments/assets/f87852de-399c-47d2-98c7-168b0493c190
+
+</td></tr></table>
+</p>
 
 ---
 
@@ -59,7 +71,7 @@ Images are saved as JPEG at quality 85, letterboxed to the target resolution (de
 
 ## Team sync
 
-QuickLabel uses the [Hugging Face Hub](https://huggingface.co/docs/huggingface_hub) as its sync backend. Before each push it pulls remote changes and merges the COCO JSON automatically, re-numbering IDs to avoid conflicts. Your HF token is stored in the OS keyring, never in plaintext.
+QuickLabel uses the [Hugging Face Hub](https://huggingface.co/docs/huggingface_hub) as its sync backend. Before each push it pulls remote changes and merges the COCO JSON automatically, re-numbering IDs to avoid conflicts. Your HF token is stored in the OS keyring, not in plaintext.
 
 ---
 
