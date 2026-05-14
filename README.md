@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/QuickLabel.png" width="120" alt="QuickLabel logo"/>
+  <img src="QuickLabel.png" width="120" alt="QuickLabel logo"/>
 </p>
 # QuickLabel
 
