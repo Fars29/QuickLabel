@@ -70,20 +70,19 @@ _STYLE_SECTION_LABEL = f"""
 
 _STYLE_SYNC_BTN = f"""
 QPushButton {{
-    background: {COLOR_HIGHLIGHT};
-    color: white;
-    border: none;
-    border-radius: 8px;
+    background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+    border: 1px solid {COLOR_ACCENT}; border-radius: 8px;
     padding: 10px 16px;
     font-size: 13px;
     font-weight: 600;
     font-family: "Segoe UI", Inter, Arial;
 }}
-QPushButton:hover {{
-    background: #ff6b7f;
+QPushButton:hover {{ 
+    background: {COLOR_ACCENT}; 
+    border-color: {COLOR_HIGHLIGHT}; 
 }}
 QPushButton:pressed {{
-    background: #c73652;
+    background: {COLOR_SURFACE};
 }}
 QPushButton:disabled {{
     background: {COLOR_ACCENT};

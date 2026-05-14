@@ -77,7 +77,7 @@ class SyncProgressDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Saving & Syncing")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
         self.setModal(True)
         self.setStyleSheet(f"background: {COLOR_SURFACE}; color: {COLOR_TEXT}; font-family: 'Segoe UI', Inter, Arial;")
         layout = QVBoxLayout(self)
@@ -93,6 +93,11 @@ class SyncProgressDialog(QDialog):
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
 
+        # Overall progress
+        self._overall_label = QLabel("Overall Progress")
+        self._overall_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(self._overall_label)
+        
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setFixedHeight(8)
@@ -100,7 +105,25 @@ class SyncProgressDialog(QDialog):
             f"QProgressBar {{ background: {COLOR_BG}; border-radius: 4px; border: none; }}"
             f"QProgressBar::chunk {{ background: {COLOR_HIGHLIGHT}; border-radius: 4px; }}"
         )
+        self._progress.setTextVisible(False)
         layout.addWidget(self._progress)
+
+        # File progress
+        self._file_label = QLabel("File Progress")
+        self._file_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
+        self._file_label.setVisible(False)
+        layout.addWidget(self._file_label)
+
+        self._file_progress = QProgressBar()
+        self._file_progress.setRange(0, 100)
+        self._file_progress.setFixedHeight(8)
+        self._file_progress.setStyleSheet(
+            f"QProgressBar {{ background: {COLOR_BG}; border-radius: 4px; border: none; }}"
+            f"QProgressBar::chunk {{ background: {COLOR_SUCCESS}; border-radius: 4px; }}"
+        )
+        self._file_progress.setTextVisible(False)
+        self._file_progress.setVisible(False)
+        layout.addWidget(self._file_progress)
 
     def set_status(self, title: str, detail: str = ""):
         self._title_label.setText(title)
@@ -109,7 +132,22 @@ class SyncProgressDialog(QDialog):
     def set_determinate(self, value: int, maximum: int):
         self._progress.setRange(0, maximum)
         self._progress.setValue(value)
+        if maximum > 0:
+            self._overall_label.setText(f"Overall Progress: {value} / {maximum}")
+            
+    def set_file_progress(self, filename: str, bytes_sent: int, total_bytes: int, speed: str):
+        self._file_label.setVisible(True)
+        self._file_progress.setVisible(True)
+        
+        size_kb = total_bytes / 1024
+        self._file_label.setText(f"Uploading: {filename} ({size_kb:.1f} KB) - {speed}")
+        
+        self._file_progress.setRange(0, total_bytes)
+        self._file_progress.setValue(bytes_sent)
 
+    def hide_file_progress(self):
+        self._file_label.setVisible(False)
+        self._file_progress.setVisible(False)
 
 class ReviewThumbnail(QFrame):
     """Miniature for the filmstrip with hover trash icon."""
@@ -763,29 +801,44 @@ class ReviewScreen(QWidget):
         dialog.show()
 
         try:
+            # We don't close the dialog here if it goes async
             self._execute_save(dialog)
         except Exception as exc:
             dialog.close()
             QMessageBox.critical(self, "Save Error", str(exc))
             return
 
-        dialog.close()
-
     def _execute_save(self, progress_dialog: SyncProgressDialog):
         """Process images, update COCO JSON, optionally sync with HF."""
         from PyQt6.QtWidgets import QApplication
 
+        self._progress_dialog = progress_dialog
         cfg = self.dm.config
 
         # Step 1: Pull remote if HF-backed
         if cfg and cfg.is_synced:
-            progress_dialog.set_status("Checking for remote changes…")
-            QApplication.processEvents()
-            self._do_pull_sync(cfg)
+            from core.hf_sync import HFPullWorker, retrieve_token
+            token = retrieve_token(cfg.hf_token_key)
+            if token:
+                progress_dialog.set_status("Checking for remote changes…")
+                self._pull_worker = HFPullWorker(cfg.hf_repo, token, self.dm.root)
+                
+                def on_pull_done(success, remote_coco, error):
+                    if success and remote_coco:
+                        self.dm.merge_remote_coco(remote_coco)
+                    # Proceed even if pull fails (offline mode)
+                    self._continue_save_after_pull(progress_dialog)
 
-        # Step 2: Save images
-        progress_dialog.set_status("Processing and saving images…")
-        QApplication.processEvents()
+                self._pull_worker.finished.connect(on_pull_done)
+                self._pull_worker.start()
+                return # Async wait
+        
+        self._continue_save_after_pull(progress_dialog)
+
+    def _continue_save_after_pull(self, progress_dialog: SyncProgressDialog):
+        """Step 2 & 3: Save images and update local COCO."""
+        from PyQt6.QtWidgets import QApplication
+        cfg = self.dm.config
 
         saved_paths: list[Path] = []
         annotations_per_image: list[list[list[float]]] = []
@@ -797,8 +850,10 @@ class ReviewScreen(QWidget):
             num = start_num + len(saved_paths)
             out_path = self.dm.build_image_path(self.class_name, num)
             try:
+                from core.image_processor import transform_bbox
                 _, _, _, transform = process_frame(src, out_path)
                 scale, px, py = transform
+                
                 # Transform each bbox to match the letterboxed output image
                 transformed = [transform_bbox(bb, scale, px, py) for bb in bboxes]
                 
@@ -819,43 +874,57 @@ class ReviewScreen(QWidget):
 
         # Step 4: Push to HF
         if cfg and cfg.is_synced:
-            progress_dialog.set_status("Uploading to Hugging Face Hub…")
-            QApplication.processEvents()
-            self._do_push_sync(cfg, saved_paths)
+            progress_dialog.set_status("Syncing with Hugging Face...", "Identifying local changes...")
+            progress_dialog.set_determinate(0, 0)
+            
+            # Start async push of all changed files (including new images and COCO)
+            self._do_push_sync_async(cfg, saved_paths, annotations_per_image)
+            return  # The done signal will be emitted in the async callback
+            
+        # Emit done signal if not syncing
+        self._finish_save(saved_paths, annotations_per_image)
 
-        # Emit done signal
+    def _finish_save(self, saved_paths, annotations_per_image):
+        if hasattr(self, "_progress_dialog") and self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+            
         self.done.emit(
             self.class_name,
             [str(p) for p in saved_paths],
             annotations_per_image,
         )
 
-    def _do_pull_sync(self, cfg):
-        from core.hf_sync import HFSync, retrieve_token
+    def _do_push_sync_async(self, cfg, saved_paths: list[Path], annotations_per_image: list):
+        from core.hf_sync import HFPushWorker, retrieve_token
         token = retrieve_token(cfg.hf_token_key)
         if not token:
+            self._finish_save(saved_paths, annotations_per_image)
             return
-        try:
-            sync = HFSync(cfg.hf_repo, token)
-            remote_coco = sync.pull(self.dm.root)
-            if remote_coco:
-                self.dm.merge_remote_coco(remote_coco)
-        except Exception:
-            pass  # Non-fatal: continue with local state
-
-    def _do_push_sync(self, cfg, saved_paths: list[Path]):
-        from core.hf_sync import HFSync, retrieve_token
-        token = retrieve_token(cfg.hf_token_key)
-        if not token:
-            return
-        try:
-            sync = HFSync(cfg.hf_repo, token)
-            changed = {str(p.relative_to(self.dm.root)) for p in saved_paths}
-            coco_rel = str(Path("annotations") / "instances_all.json")
-            changed.add(coco_rel)
-            count = sync.push(self.dm.root, changed)
-        except Exception as exc:
-            QMessageBox.warning(
-                self, "Sync Warning",
-                f"Images saved locally but HF push failed:\n{exc}\n\nYou can retry sync from the sidebar."
+            
+        changed = {str(p.relative_to(self.dm.root)) for p in saved_paths}
+        coco_rel = str(Path("annotations") / "instances_all.json")
+        changed.add(coco_rel)
+        
+        self._push_worker = HFPushWorker(cfg.hf_repo, token, self.dm.root, changed, only_missing=True)
+        dialog = self._progress_dialog
+        
+        if dialog:
+            self._push_worker.status.connect(lambda s1, s2: dialog.set_status(s1, s2))
+            self._push_worker.progress_overall.connect(
+                lambda up, tot: dialog.set_determinate(up, tot)
             )
+            self._push_worker.progress_file.connect(
+                lambda name, sent, tot, spd: dialog.set_file_progress(name, sent, tot, spd)
+            )
+        
+        def on_push_done(success, message):
+            if not success:
+                QMessageBox.warning(
+                    self, "Sync Warning",
+                    f"Images saved locally but HF push failed:\n{message}\n\nYou can retry sync from the sidebar."
+                )
+            self._finish_save(saved_paths, annotations_per_image)
+            
+        self._push_worker.finished.connect(on_push_done)
+        self._push_worker.start()

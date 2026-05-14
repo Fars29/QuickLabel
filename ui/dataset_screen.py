@@ -238,6 +238,7 @@ class CameraTab(QWidget):
     """Live webcam preview with burst capture."""
 
     capture_ready = pyqtSignal(object) # np.ndarray
+    res_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -631,6 +632,20 @@ class CameraTab(QWidget):
             self._on_fps_changed(self._fps)
 
     def _on_res_changed(self, text: str):
+        self.res_changed.emit(text)
+        parts = text.split('x')
+        if len(parts) == 2:
+            import config
+            config.TARGET_WIDTH = int(parts[0])
+            config.TARGET_HEIGHT = int(parts[1])
+            if self._worker and self._worker.isRunning():
+                self._restart_camera()
+
+    def set_res_text(self, text: str):
+        self._res_combo.blockSignals(True)
+        self._res_combo.setCurrentText(text)
+        self._res_combo.blockSignals(False)
+        # Still need to trigger the camera restart if it was changed from outside
         parts = text.split('x')
         if len(parts) == 2:
             import config
@@ -643,26 +658,85 @@ class UploadTab(QWidget):
     """Drag-and-drop image upload tab."""
     
     files_added = pyqtSignal(list) # list[str]
+    res_changed = pyqtSignal(str)  # Synchronisation signal
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
+
+        # ── Left Controls Sidebar (Mirror Camera Tab) ─────────────────────────
+        controls = QFrame()
+        controls.setFixedWidth(180)
+        controls.setStyleSheet(f"background: {COLOR_SURFACE}; border: 1px solid {COLOR_ACCENT}; border-radius: 8px;")
+        ctrl_layout = QVBoxLayout(controls)
+        ctrl_layout.setContentsMargins(10, 14, 10, 14)
+        ctrl_layout.setSpacing(10)
+        ctrl_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Resolution dropdown (Shared with Camera Tab)
+        res_lbl = QLabel("RESOLUTION")
+        res_lbl.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 10px; font-weight: 700; letter-spacing: 1px; border: none;")
+        ctrl_layout.addWidget(res_lbl)
+
+        self._res_combo = QComboBox()
+        self._res_combo.addItems(["640x480", "640x640", "800x600", "1280x720"])
+        self._res_combo.setFixedHeight(32)
+        import config
+        curr_res = f"{config.TARGET_WIDTH}x{config.TARGET_HEIGHT}"
+        self._res_combo.setCurrentText(curr_res)
+        self._res_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {COLOR_BG}; color: {COLOR_TEXT};
+                border: 2px solid {COLOR_ACCENT}; 
+                border-radius: 6px;
+                padding: 2px 24px 2px 8px; font-size: 12px;
+            }}
+            QComboBox::drop-down {{ 
+                border: none; 
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 24px; 
+            }}
+            QComboBox::down-arrow {{ 
+                image: url(down_arrow.png);
+                width: 14px; height: 14px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {COLOR_SURFACE2}; color: {COLOR_TEXT};
+                border: 1px solid {COLOR_ACCENT};
+                selection-background-color: {COLOR_ACCENT};
+            }}
+        """)
+        self._res_combo.currentTextChanged.connect(self.res_changed.emit)
+        ctrl_layout.addWidget(self._res_combo)
+
+        ctrl_layout.addStretch()
+        root.addWidget(controls)
+
+        # ── Main Upload Area ──────────────────────────────────────────────────
+        main_upload = QWidget()
+        main_layout = QVBoxLayout(main_upload)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(12)
 
         self._drop_zone = DropZone()
         self._drop_zone.files_dropped.connect(self.files_added.emit)
-        layout.addWidget(self._drop_zone)
+        main_layout.addWidget(self._drop_zone)
 
         # Clipboard button
         clip_btn = QPushButton("📋  Import from Clipboard")
         clip_btn.setStyleSheet(_BTN_SECONDARY)
+        clip_btn.setFixedHeight(36)
         clip_btn.clicked.connect(self._import_clipboard)
-        layout.addWidget(clip_btn)
-        layout.addStretch()
+        main_layout.addWidget(clip_btn)
+        
+        main_layout.addStretch()
+        root.addWidget(main_upload, 1)
 
     def _import_clipboard(self):
         pil = clipboard_to_pil()
@@ -676,6 +750,11 @@ class UploadTab(QWidget):
 
     def clear(self):
         pass
+
+    def set_res_text(self, text: str):
+        self._res_combo.blockSignals(True)
+        self._res_combo.setCurrentText(text)
+        self._res_combo.blockSignals(False)
 
 
 class DatasetScreen(QWidget):
@@ -766,6 +845,21 @@ class DatasetScreen(QWidget):
         self._camera_tab.capture_ready.connect(self._add_source)
         self._upload_tab = UploadTab()
         self._upload_tab.files_added.connect(self._add_sources)
+
+        # Sync resolutions between tabs
+        self._camera_tab.res_changed.connect(self._upload_tab.set_res_text)
+        self._upload_tab.res_changed.connect(self._camera_tab.set_res_text)
+        # Both update the global config when changed
+        def update_config(text):
+            parts = text.split('x')
+            if len(parts) == 2:
+                import config
+                config.TARGET_WIDTH = int(parts[0])
+                config.TARGET_HEIGHT = int(parts[1])
+
+        self._camera_tab.res_changed.connect(update_config)
+        self._upload_tab.res_changed.connect(update_config)
+
         self._tabs.addTab(self._camera_tab, "🎥  Camera")
         self._tabs.addTab(self._upload_tab, "📂  Upload")
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -929,32 +1023,37 @@ class DatasetScreen(QWidget):
         self.review_requested.emit(name, list(self._queued_sources))
 
     def _on_sync(self):
-        from core.hf_sync import HFPullWorker, HFPushWorker, retrieve_token
+        from core.hf_sync import HFFullSyncWorker, retrieve_token
+        from ui.review_screen import SyncProgressDialog
+        
         cfg = self.dm.config
         if not cfg or not cfg.is_synced:
             return
+            
         token = retrieve_token(cfg.hf_token_key)
         if not token:
             QMessageBox.warning(self, "Sync Error", "HF token not found in keyring.")
             return
-        self._sidebar.set_syncing(True)
-        self._do_full_sync(cfg.hf_repo, token)
 
-    def _do_full_sync(self, repo: str, token: str):
-        from core.hf_sync import HFPullWorker
-        self._pull_worker = HFPullWorker(repo, token, self.dm.root)
-        self._pull_worker.finished.connect(self._on_pull_done)
-        self._pull_worker.start()
-
-    def _on_pull_done(self, success: bool, remote_coco: dict, error: str):
-        if success and remote_coco:
-            try:
-                self.dm.merge_remote_coco(remote_coco)
-                self.dm.save_coco()
-            except Exception as e:
-                QMessageBox.warning(self, "Merge Error", str(e))
-        self._sidebar.set_syncing(False)
-        self._refresh_sidebar()
+        dialog = SyncProgressDialog(self)
+        dialog.show()
+        
+        self._sync_worker = HFFullSyncWorker(cfg.hf_repo, token, self.dm.root, self.dm)
+        
+        self._sync_worker.status.connect(dialog.set_status)
+        self._sync_worker.progress_overall.connect(dialog.set_determinate)
+        self._sync_worker.progress_file.connect(dialog.set_file_progress)
+        
+        def on_sync_done(success, message):
+            dialog.close()
+            if not success:
+                QMessageBox.critical(self, "Sync Error", message)
+            else:
+                QMessageBox.information(self, "Sync Complete", message)
+            self._refresh_sidebar()
+            
+        self._sync_worker.finished.connect(on_sync_done)
+        self._sync_worker.start()
 
     def refresh(self):
         """Call after returning from review screen."""
