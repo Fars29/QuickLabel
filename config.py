@@ -50,8 +50,9 @@ COLOR_DANGER = "#ff2a55"       # Bright red for delete
 # Bounding box canvas colors
 BBOX_COLOR_DRAWING = "#00f5a0"    # In-progress draw — green dashed
 BBOX_COLOR_CONFIRMED = "#00f5a0"  # Confirmed annotation
-BBOX_COLOR_PROPAGATED = "#00f5a0" # Tracked (same green, auto-confirmed)
-BBOX_COLOR_SELECTED = "#00d2ff"   # Currently selected box (blue)
+BBOX_COLOR_REFINED = "#00f5a0"    # High-confidence GrabCut refined (Green)
+BBOX_COLOR_PROPAGATED = "#00f5a0" # CSRT-only propagation (Green)
+BBOX_COLOR_SELECTED = "#ffb000"   # Currently selected box (Amber)
 
 # ─── Typography ────────────────────────────────────────────────────────────────
 FONT_FAMILY = "Segoe UI, Inter, Arial, sans-serif"
@@ -73,6 +74,7 @@ TRACKER_CONFIDENCE_THRESHOLD = 0.4   # Below this → show "low confidence" warn
 # CSRT does not expose a raw score; we use IoU of predicted vs. expected motion.
 # A bbox area change > this factor flags low confidence:
 TRACKER_AREA_CHANGE_THRESHOLD = 0.5  # e.g. area shrank/grew by >50%
+ENABLE_GRABCUT_REFINEMENT = True     # Use GrabCut to snap bbox to object contours
 
 # ─── Webcam ────────────────────────────────────────────────────────────────────
 WEBCAM_INDEXES_TO_TRY = [0, 1, 2, 3]   # Try these V4L/DirectShow indexes

@@ -17,8 +17,8 @@ import logging
 from typing import Optional
 
 import numpy as np
-
-from config import TRACKER_AREA_CHANGE_THRESHOLD
+import config
+from config import TRACKER_AREA_CHANGE_THRESHOLD, ENABLE_GRABCUT_REFINEMENT
 
 log = logging.getLogger(__name__)
 
@@ -42,12 +42,33 @@ _CSRT_AVAILABLE = _CV2_AVAILABLE and (_TRACKER_FACTORY is not None)
 
 
 def _make_tracker():
-    """Instantiate a fresh CSRT tracker."""
+    """Instantiate a fresh CSRT tracker with tuned parameters."""
     if _TRACKER_FACTORY is None:
         raise RuntimeError(
             "CSRT tracker unavailable. Install: pip install opencv-contrib-python"
         )
-    return _TRACKER_FACTORY()
+    
+    try:
+        # Check for Params class location
+        if hasattr(cv2, "TrackerCSRT_Params"):
+            params = cv2.TrackerCSRT_Params()
+        elif hasattr(cv2, "legacy") and hasattr(cv2.legacy, "TrackerCSRT_Params"):
+            params = cv2.legacy.TrackerCSRT_Params()
+        else:
+            return _TRACKER_FACTORY()
+
+        params.use_segmentation = True
+        params.use_channel_weights = True
+        params.psr_threshold = 0.06
+        params.padding = 2.0
+        params.filter_lr = 0.02
+        params.num_hog_channels_used = 18
+        params.window_function = "hann"
+        
+        return _TRACKER_FACTORY(params)
+    except Exception as exc:
+        log.warning("Failed to init CSRT params, using defaults: %s", exc)
+        return _TRACKER_FACTORY()
 
 
 # ── Single-box tracker ─────────────────────────────────────────────────────────
@@ -122,19 +143,79 @@ class BBoxTracker:
             return self._last_bbox, False
 
         x, y, w, h = (float(v) for v in rect)
-
-        # Confidence: reject if area changed dramatically
-        new_area = w * h
-        if self._init_area > 0:
-            ratio = abs(new_area - self._init_area) / self._init_area
-            confident = ratio < TRACKER_AREA_CHANGE_THRESHOLD
-        else:
-            confident = True
-
         new_bbox = [x, y, w, h]
         self._last_bbox = new_bbox
+
+        # Baseline confidence (CSRT area check)
+        confident = True
+        if self._init_area > 0:
+            area_ratio = abs((w * h) - self._init_area) / self._init_area
+            confident = area_ratio < TRACKER_AREA_CHANGE_THRESHOLD
+
+        # ── Refinement (GrabCut) ──────────────────────────────────────────────
+        if ENABLE_GRABCUT_REFINEMENT:
+            refined_bbox, refined_ok = self._refine_grabcut(frame_bgr, x, y, w, h)
+            if refined_ok:
+                self._last_bbox = list(refined_bbox)
+                log.debug("Refinement OK: %s -> %s", new_bbox, self._last_bbox)
+                return self._last_bbox, True  # refined=True means high confidence
+
         log.debug("Tracker update: bbox=%s confident=%s", new_bbox, confident)
         return new_bbox, confident
+
+    def _refine_grabcut(self, frame: np.ndarray, x: float, y: float, w: float, h: float) -> tuple[tuple[float, float, float, float], bool]:
+        """Snap bbox to object contours using GrabCut."""
+        try:
+            import cv2
+            # STEP 1 — Expand bbox for context
+            pad_x = int(w * 0.10)
+            pad_y = int(h * 0.10)
+            x0 = max(0, int(x - pad_x))
+            y0 = max(0, int(y - pad_y))
+            x1 = min(frame.shape[1], int(x + w + pad_x))
+            y1 = min(frame.shape[0], int(y + h + pad_y))
+            
+            roi = frame[y0:y1, x0:x1]
+            if roi.size == 0 or roi.shape[0] < 5 or roi.shape[1] < 5:
+                return (x, y, w, h), False
+
+            # STEP 2 — GrabCut on the ROI
+            mask = np.zeros(roi.shape[:2], np.uint8)
+            bgd_model = np.zeros((1, 65), np.float64)
+            fgd_model = np.zeros((1, 65), np.float64)
+            
+            # rect is the CSRT bbox relative to the expanded ROI
+            # Note: GrabCut rect is (x, y, w, h) relative to ROI
+            gc_rect = (pad_x, pad_y, int(w), int(h))
+            
+            cv2.grabCut(roi, mask, gc_rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+
+            # STEP 3 — Build foreground mask
+            fg_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+
+            # STEP 4 — Find contours and tight bbox
+            contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return (x, y, w, h), False
+            
+            largest = max(contours, key=cv2.contourArea)
+            rx, ry, rw, rh = cv2.boundingRect(largest)
+            
+            # Convert back to full frame coordinates
+            refined = (float(x0 + rx), float(y0 + ry), float(rw), float(rh))
+
+            # STEP 5 — Sanity check (reject if area changed too much)
+            original_area = w * h
+            refined_area = rw * rh
+            ratio = refined_area / original_area if original_area > 0 else 0
+            
+            if 0.40 <= ratio <= 1.60:
+                return refined, True
+            else:
+                return (x, y, w, h), False
+        except Exception as exc:
+            log.warning("GrabCut refinement failed: %s", exc)
+            return (x, y, w, h), False
 
     def reset(self) -> None:
         self._tracker = None

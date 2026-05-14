@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QKeyEvent, QPixmap, QKeySequence, QImage
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
@@ -59,6 +59,46 @@ QPushButton:pressed {{ background: {COLOR_BG}; }}
 QPushButton:disabled {{ background: {COLOR_BG}; color: {COLOR_TEXT_MUTED}; border-color: {COLOR_BG}; }}
 """
 
+
+class PropagationWorker(QThread):
+    """Background thread to run CSRT tracking + GrabCut refinement."""
+    finished = pyqtSignal(list, list) # (bboxes, states)
+    error = pyqtSignal(str)
+
+    def __init__(self, tracker: MultiBBoxTracker, curr_frame: np.ndarray, scaled_anns: list, next_frame: np.ndarray, inv_scale: tuple[float, float]):
+        super().__init__()
+        self.tracker = tracker
+        self.curr_frame = curr_frame
+        self.scaled_anns = scaled_anns
+        self.next_frame = next_frame
+        self.inv_scale = inv_scale
+
+    def run(self):
+        try:
+            self.tracker.reset()
+            ok = self.tracker.init(self.curr_frame, self.scaled_anns)
+            if not ok:
+                raise RuntimeError("Tracker init failed")
+                
+            results = self.tracker.update(self.next_frame)
+            
+            final_bboxes = []
+            final_states = []
+            inv_sx, inv_sy = self.inv_scale
+            
+            for tracked_bbox, is_refined in results:
+                x, y, w, h = tracked_bbox
+                final_bboxes.append([
+                    x * inv_sx,
+                    y * inv_sy,
+                    w * inv_sx,
+                    h * inv_sy,
+                ])
+                final_states.append(BoxState.REFINED if is_refined else BoxState.PROPAGATED)
+                
+            self.finished.emit(final_bboxes, final_states)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class BBoxListWidget(QWidget):
     """Custom widget that forwards mouse clicks to select the list item."""
@@ -226,6 +266,8 @@ class ReviewScreen(QWidget):
         self._tracker = MultiBBoxTracker()
         self._processed_frames: dict[int, np.ndarray] = {}
         self._is_current_modified = False
+        self._propagating = False  # FIX B: Guard flag
+        self._prop_worker: Optional[PropagationWorker] = None
         self._build_ui()
         self._load_image(0)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -390,6 +432,8 @@ class ReviewScreen(QWidget):
         self._img_counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nav_layout.addWidget(self._img_counter)
 
+        # Removed _prop_status label as requested
+
         self._next_btn = QPushButton("Next →")
         self._next_btn.setStyleSheet(_BTN_NAV)
         self._next_btn.setFixedWidth(100)
@@ -480,6 +524,7 @@ class ReviewScreen(QWidget):
 
     def _save_current(self):
         """Save canvas annotations back to memory for current image."""
+        self._canvas.deselect_all()  # Ensure nothing is amber in saved memory
         self._annotations[self._current_idx] = self._canvas.get_annotations()
         self._states[self._current_idx] = self._canvas.get_annotation_states()
         self._update_filmstrip_item(self._current_idx)
@@ -560,20 +605,19 @@ class ReviewScreen(QWidget):
     def _propagate_to(self, next_idx: int):
         """
         Use CSRT tracker to propagate bboxes from the current frame to next_idx.
-
-        Key insight: we track at the configured resolution so frames are always
-        comparable. The user's annotations are in ORIGINAL image pixel coordinates,
-        so we scale them down to the target resolution before init(), then scale the result back
-        up to the original resolution before storing.
+        FIX A & B: Now runs in background thread and guards against concurrency.
         """
-        curr_frame_640 = self._processed_frames.get(self._current_idx)   # 640x480 BGR
-        curr_anns = self._annotations[self._current_idx]                   # original px coords
+        if self._propagating:
+            return  # Drop overlapping calls (FIX B)
+
+        curr_frame_640 = self._processed_frames.get(self._current_idx)
+        curr_anns = self._annotations[self._current_idx]
 
         if curr_frame_640 is None or not curr_anns:
             self._load_image(next_idx)
             return
 
-        # --- Determine the original size of the CURRENT image ---
+        # 1. Expand context and scale
         curr_src = self._sources[self._current_idx]
         try:
             curr_pil = _to_pil(curr_src)
@@ -582,89 +626,64 @@ class ReviewScreen(QWidget):
             self._load_image(next_idx)
             return
 
-        track_h, track_w = curr_frame_640.shape[:2]   # should be 480, 640
-        scale_x = track_w / orig_w
-        scale_y = track_h / orig_h
+        track_h, track_w = curr_frame_640.shape[:2]
+        scale_x, scale_y = track_w / orig_w, track_h / orig_h
+        scaled_anns = [[b[0]*scale_x, b[1]*scale_y, b[2]*scale_x, b[3]*scale_y] for b in curr_anns]
 
-        # Scale annotations from original-image coords → 640x480 tracker coords
-        scaled_anns = [
-            [b[0]*scale_x, b[1]*scale_y, b[2]*scale_x, b[3]*scale_y]
-            for b in curr_anns
-        ]
-
-        # --- Prepare the next frame at 640x480 ---
         next_src = self._sources[next_idx]
         try:
             from core.image_processor import process_frame_to_array
-            next_rgb, _ = process_frame_to_array(next_src)   # 640x480 RGB
+            next_rgb, _ = process_frame_to_array(next_src)
             next_bgr = next_rgb[:, :, ::-1].copy()
+            next_pil = _to_pil(next_src)
+            next_orig_w, next_orig_h = next_pil.size
         except Exception:
             self._load_image(next_idx)
             return
 
-        # Store the next frame NOW so it's cached
         self._processed_frames[next_idx] = next_bgr
+        inv_scale = (next_orig_w / track_w, next_orig_h / track_h)
 
-        # --- Determine original size of the NEXT image (for inverse scale) ---
-        try:
-            next_pil = _to_pil(next_src)
-            next_orig_w, next_orig_h = next_pil.size
-        except Exception:
-            next_orig_w, next_orig_h = orig_w, orig_h
+        # 2. Start background worker (FIX A)
+        self._propagating = True
+        self._prev_btn.setEnabled(False)
+        self._next_btn.setEnabled(False)
+        self._filmstrip.setEnabled(False)
 
-        inv_scale_x = next_orig_w / track_w
-        inv_scale_y = next_orig_h / track_h
+        self._prop_worker = PropagationWorker(
+            self._tracker, curr_frame_640, scaled_anns, next_bgr, inv_scale
+        )
+        
+        def on_finished(bboxes, states):
+            self._propagating = False
+            self._prev_btn.setEnabled(True)
+            self._next_btn.setEnabled(True)
+            self._filmstrip.setEnabled(True)
+            
+            self._annotations[next_idx] = bboxes
+            self._states[next_idx] = states
+            self._load_image(next_idx)
+            
+            # Sync filmstrip selection
+            self._filmstrip.blockSignals(True)
+            self._filmstrip.setCurrentRow(next_idx)
+            self._filmstrip.blockSignals(False)
+            self._update_filmstrip_item(next_idx)
 
-        # --- Run CSRT tracking ---
-        self._tracker.reset()
-        ok = self._tracker.init(curr_frame_640, scaled_anns)
-
-        if not ok:
-            # Tracker unavailable or init failed — copy annotations as-is
-            import logging
-            logging.getLogger(__name__).warning(
-                "Tracker init failed; copying annotations verbatim."
-            )
+        def on_error(err):
+            self._propagating = False
+            self._prev_btn.setEnabled(True)
+            self._next_btn.setEnabled(True)
+            self._filmstrip.setEnabled(True)
+            
+            # Fallback: copy verbatim
             self._annotations[next_idx] = list(curr_anns)
             self._states[next_idx] = [BoxState.PROPAGATED] * len(curr_anns)
-            self._current_idx = next_idx
-            self._canvas.load_image(next_src)
-            self._canvas.set_annotations(self._annotations[next_idx], self._states[next_idx])
-            self._update_nav()
-            self._update_filmstrip_item(next_idx)
-            self._is_current_modified = False
-            return
+            self._load_image(next_idx)
 
-        results = self._tracker.update(next_bgr)
-        propagated_bboxes = []
-        all_confident = True
-
-        for tracked_bbox, confident in results:
-            # Scale result back from 640x480 → next image original coords
-            x, y, w, h = tracked_bbox
-            prop_bbox = [
-                x * inv_scale_x,
-                y * inv_scale_y,
-                w * inv_scale_x,
-                h * inv_scale_y,
-            ]
-            propagated_bboxes.append(prop_bbox)
-            if not confident:
-                all_confident = False
-
-        self._annotations[next_idx] = propagated_bboxes
-        self._states[next_idx] = [BoxState.PROPAGATED] * len(propagated_bboxes)
-
-        self._current_idx = next_idx
-        self._canvas.load_image(next_src)
-        self._canvas.set_annotations(propagated_bboxes, self._states[next_idx])
-
-        if not all_confident:
-            pass # Keep simplified for now
-        
-        self._update_nav()
-        self._update_filmstrip_item(next_idx)
-        self._is_current_modified = False
+        self._prop_worker.finished.connect(on_finished)
+        self._prop_worker.error.connect(on_error)
+        self._prop_worker.start()
 
     # ─── Annotations UI sync ───────────────────────────────────────────────────
 
@@ -694,7 +713,11 @@ class ReviewScreen(QWidget):
         states = self._canvas.get_annotation_states()
         for i, (bbox, state) in enumerate(zip(bboxes, states)):
             x, y, w, h = [round(v) for v in bbox]
-            state_icon = "🔳" if state == BoxState.PROPAGATED else "🟩"
+            
+            if state in (BoxState.REFINED, BoxState.PROPAGATED):
+                state_icon = "🔳"
+            else:
+                state_icon = "🟩"
             
             item = QListWidgetItem()
             self._bbox_list.addItem(item)

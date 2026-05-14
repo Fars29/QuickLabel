@@ -52,12 +52,13 @@ from config import (
     BBOX_COLOR_CONFIRMED,
     BBOX_COLOR_DRAWING,
     BBOX_COLOR_PROPAGATED,
+    BBOX_COLOR_REFINED,
     BBOX_COLOR_SELECTED,
     COLOR_BG,
 )
 from core.image_processor import _to_pil
 
-_HANDLE_RADIUS = 10.0
+_HANDLE_RADIUS = 6.0  # Fixed screen pixels (due to ItemIgnoresTransformations)
 _HANDLE_POSITIONS = [
     (0.0, 0.0),   # top-left
     (0.5, 0.0),   # top-center
@@ -86,6 +87,7 @@ class BoxState(Enum):
     DRAWING = auto()
     CONFIRMED = auto()
     PROPAGATED = auto()
+    REFINED = auto()
     SELECTED = auto()
 
 
@@ -94,6 +96,7 @@ def _state_color(state: BoxState) -> str:
         BoxState.DRAWING: BBOX_COLOR_DRAWING,
         BoxState.CONFIRMED: BBOX_COLOR_CONFIRMED,
         BoxState.PROPAGATED: BBOX_COLOR_PROPAGATED,
+        BoxState.REFINED: BBOX_COLOR_REFINED,
         BoxState.SELECTED: BBOX_COLOR_SELECTED,
     }
     return mapping.get(state, BBOX_COLOR_CONFIRMED)
@@ -108,6 +111,7 @@ class HandleItem(QGraphicsEllipseItem):
         self.handle_index = index
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setAcceptHoverEvents(True)
         self.setCursor(QCursor(_HANDLE_CURSORS[index]))
         self._update_appearance(BBOX_COLOR_CONFIRMED)
@@ -145,6 +149,7 @@ class BBoxItem(QGraphicsRectItem):
         self._drag_handle_idx: Optional[int] = None
         self._drag_start_pos: Optional[QPointF] = None
         self._drag_start_rect: Optional[QRectF] = None
+        self._prev_state: BoxState = state # Store state before selection
 
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -156,6 +161,8 @@ class BBoxItem(QGraphicsRectItem):
         self._apply_style()
 
     def set_state(self, state: BoxState) -> None:
+        if state != BoxState.SELECTED:
+            self._prev_state = state
         self._state = state
         self._apply_style()
 
@@ -431,17 +438,17 @@ class BBoxCanvas(QGraphicsView):
     def select_box(self, index: int) -> None:
         """Select a box by index (for right-panel sync)."""
         if 0 <= index < len(self._boxes):
-            self._deselect_all()
+            self.deselect_all()
             self._boxes[index].set_state(BoxState.SELECTED)
             self._selected_box = self._boxes[index]
             self.box_selected.emit(index)
 
 
 
-    def _deselect_all(self) -> None:
+    def deselect_all(self) -> None:
         for box in self._boxes:
             if box.get_state() == BoxState.SELECTED:
-                box.set_state(BoxState.CONFIRMED)
+                box.set_state(box._prev_state)
         self._selected_box = None
 
     # ─── Mouse Events ──────────────────────────────────────────────────────────
@@ -494,7 +501,7 @@ class BBoxCanvas(QGraphicsView):
                 return
 
             # No hit → start drawing
-            self._deselect_all()
+            self.deselect_all()
             self._drawing = True
             self._draw_start = scene_pos
             draw_rect = BBoxItem(QRectF(scene_pos, scene_pos), BoxState.DRAWING)
@@ -562,7 +569,7 @@ class BBoxCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def _select_box_item(self, item: BBoxItem) -> None:
-        self._deselect_all()
+        self.deselect_all()
         prev_state = item.get_state()
         item.set_state(BoxState.SELECTED)
         self._selected_box = item
@@ -576,7 +583,7 @@ class BBoxCanvas(QGraphicsView):
             self.delete_selected()
             return
         if event.key() == Qt.Key.Key_Escape:
-            self._deselect_all()
+            self.deselect_all()
             self._selected_box = None
             self.box_selected.emit(-1)
             return

@@ -71,6 +71,8 @@ class App(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} — {self._dm.config.name}")
 
     def _on_review_requested(self, class_name: str, sources: list) -> None:
+        if self._dataset_screen is not None:
+            self._dataset_screen.cleanup()
         from ui.review_screen import ReviewScreen
 
         # Remove old review screen

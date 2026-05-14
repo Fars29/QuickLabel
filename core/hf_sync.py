@@ -13,9 +13,12 @@ Design decisions:
 
 from __future__ import annotations
 
+import os
+
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+
 import io
 import json
-import os
 import re
 import shutil
 import tempfile

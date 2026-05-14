@@ -1020,6 +1020,7 @@ class DatasetScreen(QWidget):
         name = self._class_name.strip()
         if not name or not self._queued_sources:
             return
+        self._camera_tab.stop_camera()
         self.review_requested.emit(name, list(self._queued_sources))
 
     def _on_sync(self):
@@ -1063,6 +1064,16 @@ class DatasetScreen(QWidget):
         self._class_input.clear()
         self._class_name = ""
         self._review_btn.setEnabled(False)
+        
+        # Ensure camera restarts if we return to the camera tab
+        if self._tabs.currentIndex() == 0:
+            QTimer.singleShot(100, self._camera_tab._start_camera)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Handle cases where we return to this screen (e.g. from Review or background)
+        if self._tabs.currentIndex() == 0:
+            QTimer.singleShot(100, self._camera_tab._start_camera)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
