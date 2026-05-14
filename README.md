@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="QuickLabel.png" width="120" alt="QuickLabel logo"/>
+  <img src="QuickLabel.png" width="150" alt="QuickLabel logo"/>
 </p>
 
 # QuickLabel
@@ -8,7 +8,7 @@
 
 QuickLabel lets small teams build COCO-format datasets together without friction. Capture images from a webcam, drag in files, draw bounding boxes, and push everything to a shared Hugging Face repository in one click.
 
-![Demo](demo.mp4)
+https://github.com/user-attachments/assets/f87852de-399c-47d2-98c7-168b0493c190
 
 ---
 
