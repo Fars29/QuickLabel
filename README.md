@@ -25,8 +25,8 @@ python main.py
 
 1. **Create or open a dataset** — local folder or backed by a Hugging Face repo.
 2. **Set a class name** — existing classes appear as suggestions while you type.
-3. **Capture or upload images** — hold Space to burst-capture from your webcam at 5 fps, or drag files/folders into the upload tab.
-4. **Annotate** — draw bounding boxes on the first frame; CSRT tracking propagates them automatically to the following frames.
+3. **Capture or upload images** — hold Space to burst-capture from your webcam at the selected fps, or drag files/folders into the upload tab.
+4. **Annotate** — draw bounding boxes on the first frame; CSRT tracking propagates them automatically to the following frames. This makes it very fast!
 5. **Done** — QuickLabel pulls the latest remote changes, merges them, saves your images and updates the COCO JSON, then pushes everything back to Hugging Face.
 
 Output is a standard COCO `instances_all.json` ready to feed directly into Detic, Detectron2, or any YOLO pipeline.
@@ -60,4 +60,4 @@ QuickLabel uses the [Hugging Face Hub](https://huggingface.co/docs/huggingface_h
 
 ## License
 
-MIT
+AGPL
