@@ -8,7 +8,13 @@
 
 QuickLabel lets small teams build COCO-format datasets together without friction. Capture images from a webcam, drag in files, draw bounding boxes, and push everything to a shared Hugging Face repository in one click.
 
+<p align="center">
+<table><tr><td>
+
 https://github.com/user-attachments/assets/f87852de-399c-47d2-98c7-168b0493c190
+
+</td></tr></table>
+</p>
 
 ---
 
