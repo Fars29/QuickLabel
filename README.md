@@ -1,6 +1,6 @@
 # QuickLabel
 
-**Collaborative dataset annotation for object detection — built for speed.**
+**Collaborative dataset annotation for object detection. Built for speed.**
 
 QuickLabel lets small teams build COCO-format datasets together without friction. Capture images from a webcam, drag in files, draw bounding boxes, and push everything to a shared Hugging Face repository in one click.
 
